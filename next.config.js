@@ -1,0 +1,103 @@
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // Self-contained server build for the Docker image (Hetzner / Coolify).
+  output: 'standalone',
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  compress: true,
+  swcMinify: true,
+  experimental: {
+    // Load these from node_modules at runtime instead of bundling them:
+    // pg has optional native bindings, Better Auth / bcryptjs are Node-only.
+    serverComponentsExternalPackages: ['pg', 'better-auth', 'bcryptjs'],
+  },
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    minimumCacheTTL: 31536000,
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'i.pravatar.cc',
+      },
+      {
+        // Uploaded files (blog images, Writerfy images, avatars) live on our
+        // own server under /uploads/… and are stored with absolute URLs.
+        // Without this entry Next.js <Image> silently refuses to render them.
+        protocol: 'https',
+        hostname: 'marineyard.com',
+        pathname: '/uploads/**',
+      },
+    ],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+  },
+  async redirects() {
+    return [
+      {
+        // www → apex, one permanent hop.
+        source: '/:path*',
+        has: [{ type: 'host', value: 'www.marineyard.com' }],
+        destination: 'https://marineyard.com/:path*',
+        permanent: true,
+      },
+      // The blog lives at /resources on MarineYard.
+      { source: '/blog', destination: '/resources', permanent: true },
+      { source: '/blog/:path*', destination: '/:path*', permanent: true },
+      { source: '/marketplace', destination: '/listings', permanent: true },
+      { source: '/sell', destination: '/dashboard/listings/new', permanent: false },
+    ]
+  },
+  async headers() {
+    return [
+      {
+        // Security headers — all pages
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
+        ],
+      },
+      {
+        // Homepage — most-visited route, was previously uncached at the
+        // CDN edge. Every full reload paid a ~3s cold-origin TTFB which
+        // caused the "blank gradient" pause users complained about.
+        // Cache for 60s with a generous stale-while-revalidate so admin
+        // edits to hero text, blocks, etc. still appear within a minute,
+        // but repeat visitors get instant edge responses.
+        source: '/',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=0, s-maxage=60, stale-while-revalidate=300' },
+        ],
+      },
+      {
+        // Frequently-updated routes — listing, feeds, sitemap. Edge cache
+        // for ONE MINUTE max with stale-while-revalidate, so newly
+        // published articles appear within 60s even before Next.js's
+        // revalidatePath() finishes propagating. The previous 1-hour
+        // edge cache here was the reason new posts stayed invisible to
+        // visitors despite the server-side revalidation working.
+        source: '/(resources|listings|sitemap\\.xml|feed\\.xml)',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=0, s-maxage=60, stale-while-revalidate=300' },
+        ],
+      },
+      {
+        // Static blog & info pages — cache at CDN edge for 1 hour, stale-while-revalidate 1 day
+        // (these rarely change, so aggressive caching is safe)
+        source: '/(about|contact|pricing|privacy|terms|refund)',
+        headers: [
+          { key: 'Cache-Control', value: 'public, s-maxage=3600, stale-while-revalidate=86400' },
+        ],
+      },
+    ]
+  },
+};
+
+module.exports = nextConfig;

@@ -1,0 +1,114 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createAdminClient as createClient } from '@/lib/db'
+import { validateEmailQuality } from '@/lib/email-validation'
+import { getClientIp, resolveCountry } from '@/lib/geo'
+import { getSessionUser } from '@/lib/session'
+
+// Full database access — server-side only
+const adminSupabase = createClient()
+
+function genCode(uid: string) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let hash = 0
+  for (let i = 0; i < uid.length; i++) {
+    hash = ((hash << 5) - hash) + uid.charCodeAt(i)
+    hash |= 0
+  }
+  let code = ''
+  let h = Math.abs(hash)
+  for (let i = 0; i < 8; i++) {
+    code += chars[h % chars.length]
+    h = Math.floor(h / chars.length) || (h * 31 + i)
+  }
+  return code
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const { userId, email, fullName, referralCode, country } = await request.json()
+
+    if (!userId || !email) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    }
+
+    // --- Email quality check ---
+    const emailCheck = validateEmailQuality(email)
+    if (!emailCheck.valid) {
+      return NextResponse.json({ error: emailCheck.reason }, { status: 400 })
+    }
+
+    // Only the account that was just signed up (its session cookie) may
+    // create its own profile — prevents creating profiles for fake ids.
+    const sessionUser = await getSessionUser()
+    if (!sessionUser || sessionUser.id !== userId) {
+      return NextResponse.json({ error: 'Invalid user' }, { status: 401 })
+    }
+
+    // Already created (e.g. a retried request) — nothing to do.
+    const { data: existingProfile } = await adminSupabase.from('profiles').select('id').eq('id', userId).maybeSingle()
+    if (existingProfile) return NextResponse.json({ success: true })
+
+    // --- IP-based duplicate account check ---
+    const clientIp = getClientIp(request)
+    if (clientIp) {
+      const { data: existingByIp } = await adminSupabase
+        .from('profiles')
+        .select('id')
+        .eq('signup_ip', clientIp)
+        .limit(1)
+        .maybeSingle()
+
+      if (existingByIp) {
+        return NextResponse.json({
+          error: 'suspicious_ip',
+          message: 'An account already exists from your network. For security reasons, only one account is allowed per network. If you believe this is a mistake, please contact support.',
+        }, { status: 409 })
+      }
+    }
+
+    const myCode = genCode(userId)
+
+    // Insert with HARDCODED safe defaults — client cannot influence plan/credits
+    const { error: insertErr } = await adminSupabase.from('profiles').insert({
+      id:                   userId,
+      email:                email,
+      full_name:            fullName || '',
+      credits:              90,          // always 90 (= 9 free listings) — never from client
+      plan:                 'free',      // always free — never from client
+      total_identifications: 0,
+      referral_code:        myCode,
+      signup_ip:            clientIp,
+      country:              country || (await resolveCountry(request)),
+    })
+
+    if (insertErr) throw insertErr
+
+    // Apply referral bonus if a valid ref code was provided
+    if (referralCode) {
+      const { data: referrer } = await adminSupabase
+        .from('profiles')
+        .select('id, credits')
+        .eq('referral_code', referralCode.toUpperCase())
+        .maybeSingle()
+
+      if (referrer && referrer.id !== userId) {
+        // New user gets +20 bonus credits
+        await adminSupabase
+          .from('profiles')
+          .update({ credits: 110, referred_by: referrer.id })  // 90 base + 20 bonus
+          .eq('id', userId)
+
+        // Referrer gets +20 bonus credits
+        await adminSupabase
+          .from('profiles')
+          .update({ credits: (referrer.credits || 0) + 20 })
+          .eq('id', referrer.id)
+      }
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (err: any) {
+    console.error('create-profile error:', err)
+    return NextResponse.json({ error: err.message || 'Failed to create profile' }, { status: 500 })
+  }
+}

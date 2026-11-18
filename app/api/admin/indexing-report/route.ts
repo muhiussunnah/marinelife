@@ -1,0 +1,511 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@/lib/server-client'
+import { getDb } from '@/lib/db'
+import { isAdminEmail } from '@/lib/admin'
+import { google } from 'googleapis'
+import { googleAuth, googleErrorMessage, searchConsoleProperty } from '@/lib/google-auth'
+import {
+  bingConfigured, bingPageKey, bingSiteUrl, getBingPagesInSearch, getBingQuota, getBingUrlInfo,
+  submitBingSitemap, submitBingUrls,
+} from '@/lib/bing-webmaster'
+import sitemap from '@/lib/sitemap-entries'
+
+const SITE_URL = 'https://marineyard.com'
+const INDEXNOW_KEY = '98363e183829a87e54610fb954a8501a'
+
+function getAuth(scopes: string[]) {
+  return googleAuth(scopes)
+}
+
+async function adminCheck(request: NextRequest) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user || !isAdminEmail(user.email)) return null
+  return user
+}
+
+function getAdmin() {
+  return getDb()
+}
+
+// ── GET — return cached results ─────────────────────────────────────────────
+export async function GET(request: NextRequest) {
+  if (!(await adminCheck(request))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  // ?engine=bing reads the Bing tab's table; the rows are returned in the
+  // same shape as Google's so the page renders both the same way.
+  const bing = new URL(request.url).searchParams.get('engine') === 'bing'
+  const admin = getAdmin()
+  const { data: rows, error } = await admin
+    .from(bing ? 'bing_indexing_cache' : 'indexing_cache')
+    .select('*')
+    .order('url')
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  let cache = rows || []
+  let bingInfo: any
+  if (bing) {
+    // IndexNow requests are recorded on the Google table for every URL.
+    const { data: google } = await admin.from('indexing_cache').select('url, indexnow_requested_at')
+    const indexNowAt = new Map((google || []).map((g: any) => [g.url, g.indexnow_requested_at]))
+    cache = cache.map((r: any) => ({
+      ...r,
+      index_requested_at: r.submitted_at,
+      indexnow_requested_at: indexNowAt.get(r.url) || null,
+    }))
+    bingInfo = { configured: bingConfigured(), siteUrl: bingSiteUrl(), quota: null, error: '' }
+    if (bingInfo.configured) {
+      try {
+        bingInfo.quota = await getBingQuota()
+      } catch (err: any) {
+        bingInfo.error = String(err?.message || err).slice(0, 200)
+      }
+    }
+  }
+
+  // Enrich each cache row with a publish date so the admin UI can show
+  // "Published N days ago" under the indexing status. The indexing_cache
+  // table only tracks crawl/index state — the date has to come from
+  // elsewhere. We resolve it from TWO sources so EVERY page gets a date
+  // (root cause of the earlier "some show, some don't"):
+  //
+  //   1. blog_posts.published_at — exact publish date for DB-backed
+  //      posts (Writerfy + admin-created articles).
+  //   2. sitemap.ts lastModified — fallback for hardcoded static React
+  //      pages (/resources, /about, /contact, …) that have no
+  //      blog_posts row. The sitemap already carries a per-URL
+  //      lastModified that IS the canonical publish/update date used for
+  //      SEO, so reusing it keeps the dates honest and consistent.
+  //
+  // Pathnames are normalised (trailing slash stripped, except root) on
+  // every side so Google's returned URL, the DB slug, and the sitemap
+  // URL all match regardless of trailing-slash quirks.
+  const normalizePath = (raw: string): string => {
+    let p: string
+    try { p = new URL(raw).pathname || '/' } catch { p = raw || '/' }
+    if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
+    return p
+  }
+
+  const dateByPath = new Map<string, string>()
+
+  // Source 1: DB posts (highest priority — real publish date)
+  const { data: posts } = await admin
+    .from('blog_posts')
+    .select('slug, published_at, created_at')
+  for (const p of posts || []) {
+    const d = p.published_at || p.created_at
+    if (p.slug && d) dateByPath.set(normalizePath(p.slug), d)
+  }
+
+  // Source 2: sitemap lastModified (fallback for hardcoded static pages)
+  try {
+    const sm = await sitemap()
+    for (const entry of sm) {
+      const path = normalizePath(entry.url)
+      if (dateByPath.has(path)) continue // DB date wins
+      const lm = (entry as any).lastModified
+      if (!lm) continue
+      const iso = lm instanceof Date ? lm.toISOString() : new Date(lm).toISOString()
+      if (!isNaN(Date.parse(iso))) dateByPath.set(path, iso)
+    }
+  } catch {
+    // Sitemap fetch failing just means hardcoded pages show no date —
+    // DB-backed posts still get theirs from source 1.
+  }
+
+  const results = cache.map((r: any) => ({
+    ...r,
+    published_at: dateByPath.get(normalizePath(r.url)) || null,
+  }))
+  const indexed = results.filter((r: any) => r.status === 'indexed')
+  const notIndexed = results.filter((r: any) => r.status !== 'indexed' && r.status !== 'error')
+  const errors = results.filter((r: any) => r.status === 'error')
+
+  // Find the most recent check time
+  let lastScan: string | null = null
+  for (const r of results) {
+    if (r.checked_at && (!lastScan || r.checked_at > lastScan)) lastScan = r.checked_at
+  }
+
+  return NextResponse.json({
+    total: results.length,
+    indexed: indexed.length,
+    notIndexed: notIndexed.length,
+    errors: errors.length,
+    indexRate: results.length > 0
+      ? Math.round((indexed.length / results.length) * 1000) / 10
+      : 0,
+    results,
+    lastScan,
+    bing: bingInfo,
+  })
+}
+
+// ── POST — actions ─────────────────────────────────────────────────────────
+export async function POST(request: NextRequest) {
+  if (!(await adminCheck(request))) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const body = await request.json()
+  const { action } = body
+  const admin = getAdmin()
+
+  // ─── Get all URLs from sitemap ─────────────────────────────────────────────
+  if (action === 'get-urls') {
+    try {
+      const res = await fetch(`${SITE_URL}/sitemap.xml`, {
+        signal: AbortSignal.timeout(15000),
+        headers: { 'User-Agent': 'MarineYardAdmin/1.0' },
+      })
+      const xml = await res.text()
+      const urls = Array.from(xml.matchAll(/<loc>([^<]+)<\/loc>/g))
+        .map(m => m[1])
+        .filter(u => u.includes('marineyard.com'))
+
+      return NextResponse.json({ urls, count: urls.length })
+    } catch (err: any) {
+      return NextResponse.json({ error: 'Failed to fetch sitemap', details: err.message }, { status: 500 })
+    }
+  }
+
+  // ─── Check a batch of URLs via URL Inspection API ──────────────────────────
+  if (action === 'check-batch') {
+    const { urls } = body
+    if (!urls?.length) {
+      return NextResponse.json({ error: 'No URLs provided' }, { status: 400 })
+    }
+
+    const batch = urls.slice(0, 5) // max 5 per call for safety
+    const auth = getAuth(['https://www.googleapis.com/auth/webmasters'])
+    const sc = google.searchconsole({ version: 'v1', auth })
+    const results: any[] = []
+    let property: string
+    try {
+      property = await searchConsoleProperty()
+    } catch (err: any) {
+      // Credentials / access problem: say so once, and keep the last scan.
+      return NextResponse.json({ error: googleErrorMessage(err) }, { status: 502 })
+    }
+
+    for (const url of batch) {
+      try {
+        const inspection = await sc.urlInspection.index.inspect({
+          requestBody: {
+            inspectionUrl: url,
+            siteUrl: property,
+          },
+        })
+
+        const idx = inspection.data.inspectionResult?.indexStatusResult
+        const coverageState = idx?.coverageState || 'Unknown'
+        const isIndexed =
+          coverageState.toLowerCase().includes('submitted and indexed') ||
+          (coverageState.toLowerCase().includes('indexed') &&
+            !coverageState.toLowerCase().includes('not indexed'))
+
+        const record = {
+          url,
+          status: isIndexed ? 'indexed' : 'not_indexed',
+          coverage_state: coverageState,
+          last_crawl_time: idx?.lastCrawlTime || null,
+          indexing_state: idx?.indexingState || null,
+          page_fetch_state: idx?.pageFetchState || null,
+          robots_txt_state: idx?.robotsTxtState || null,
+          checked_at: new Date().toISOString(),
+        }
+
+        await admin.from('indexing_cache').upsert(record, { onConflict: 'url' })
+        results.push(record)
+      } catch (err: any) {
+        const record = {
+          url,
+          status: 'error',
+          coverage_state: googleErrorMessage(err).slice(0, 200) || 'API Error',
+          checked_at: new Date().toISOString(),
+        }
+        await admin.from('indexing_cache').upsert(record, { onConflict: 'url' })
+        results.push(record)
+      }
+
+      // Rate limit: ~1 req/sec
+      if (batch.indexOf(url) < batch.length - 1) {
+        await new Promise(r => setTimeout(r, 1200))
+      }
+    }
+
+    return NextResponse.json({ results, checked: results.length })
+  }
+
+  // ─── Bing: check a batch of URLs via the Bing Webmaster API ────────────────
+  // Bing has no "indexed" field like Google's URL Inspection. A page counts
+  // as indexed when Bing has shown it in search (it has impressions) or has
+  // crawled it successfully.
+  if (action === 'bing-check-batch') {
+    const { urls } = body
+    if (!urls?.length) return NextResponse.json({ error: 'No URLs provided' }, { status: 400 })
+    if (!bingConfigured()) {
+      return NextResponse.json({ error: 'BING_WEBMASTER_API_KEY is not set in Coolify' }, { status: 400 })
+    }
+
+    let inSearch: Set<string>
+    try {
+      inSearch = await getBingPagesInSearch()
+    } catch (err: any) {
+      // Key / site problem: say so once, and keep the last scan.
+      return NextResponse.json({ error: String(err?.message || err).slice(0, 200) }, { status: 502 })
+    }
+
+    // Bing throttles GetUrlInfo quickly ("ThrottleHost"): pages already shown
+    // in search skip it, the rest are spaced out and retried with a pause.
+    const urlInfoWithRetry = async (url: string) => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await getBingUrlInfo(url)
+        } catch (err: any) {
+          if (attempt === 3 || !/Throttle/i.test(String(err?.message || err))) throw err
+          await new Promise(r => setTimeout(r, 4000 * attempt))
+        }
+      }
+    }
+
+    const results: any[] = []
+    for (const url of urls.slice(0, 5)) {
+      const record: any = { url, checked_at: new Date().toISOString() }
+      const shown = inSearch.has(bingPageKey(url))
+      if (shown) {
+        record.status = 'indexed'
+        record.coverage_state = 'Indexed - shown in Bing search'
+        await admin.from('bing_indexing_cache').upsert(record, { onConflict: 'url' })
+        results.push(record)
+        continue
+      }
+      try {
+        const info = await urlInfoWithRetry(url)
+        record.last_crawl_time = info.lastCrawled
+        record.discovered_at = info.discovered
+        record.http_status = info.httpStatus || null
+        const crawledOk = !!info.lastCrawled && (!info.httpStatus || info.httpStatus === 200)
+        record.status = shown || crawledOk ? 'indexed' : 'not_indexed'
+        record.coverage_state = shown
+          ? 'Indexed - shown in Bing search'
+          : crawledOk
+            ? 'Indexed - crawled by Bing'
+            : info.lastCrawled
+              ? `Crawled - HTTP ${info.httpStatus}`
+              : info.discovered
+                ? 'Discovered - not crawled yet'
+                : 'URL is unknown to Bing'
+      } catch (err: any) {
+        const msg = String(err?.message || err).replace(/^Bing GetUrlInfo: /, '')
+        record.status = 'error'
+        record.coverage_state = /Throttle/i.test(msg)
+          ? 'Bing rate limit - run the scan again later'
+          : msg.slice(0, 200) || 'API Error'
+      }
+      await admin.from('bing_indexing_cache').upsert(record, { onConflict: 'url' })
+      results.push(record)
+      await new Promise(r => setTimeout(r, 1500))
+    }
+
+    return NextResponse.json({ results, checked: results.length })
+  }
+
+  // ─── Bing: submit URLs for crawling (counts against the daily quota) ───────
+  if (action === 'bing-submit') {
+    const urls: string[] = (body.urls || []).slice(0, 10)
+    if (!urls.length) return NextResponse.json({ error: 'No URLs' }, { status: 400 })
+    if (!bingConfigured()) {
+      return NextResponse.json({ error: 'BING_WEBMASTER_API_KEY is not set in Coolify' }, { status: 400 })
+    }
+    try {
+      await submitBingUrls(urls)
+      const now = new Date().toISOString()
+      for (const url of urls) {
+        await admin.from('bing_indexing_cache').upsert({ url, submitted_at: now }, { onConflict: 'url' })
+      }
+      return NextResponse.json({ success: urls.length, failed: 0, total: urls.length })
+    } catch (err: any) {
+      return NextResponse.json({
+        success: 0,
+        failed: urls.length,
+        total: urls.length,
+        error: 'Bing submission failed',
+        details: String(err?.message || err).slice(0, 200),
+      }, { status: 502 })
+    }
+  }
+
+  // ─── Request indexing via Indexing API ──────────────────────────────────────
+  if (action === 'request-index') {
+    const { url } = body
+    if (!url) return NextResponse.json({ error: 'No URL' }, { status: 400 })
+
+    try {
+      const auth = getAuth(['https://www.googleapis.com/auth/indexing'])
+      const indexing = google.indexing({ version: 'v3', auth })
+
+      await indexing.urlNotifications.publish({
+        requestBody: { url, type: 'URL_UPDATED' },
+      })
+
+      await admin.from('indexing_cache').upsert(
+        { url, index_requested_at: new Date().toISOString() },
+        { onConflict: 'url' }
+      )
+
+      return NextResponse.json({ success: true, url })
+    } catch (err: any) {
+      return NextResponse.json({
+        error: 'Indexing request failed',
+        details: googleErrorMessage(err),
+        hint: 'Ensure service account has Indexing API access and is owner in Search Console.',
+      }, { status: 500 })
+    }
+  }
+
+  // ─── Bulk request indexing ─────────────────────────────────────────────────
+  if (action === 'bulk-request') {
+    const { urls } = body
+    if (!urls?.length) return NextResponse.json({ error: 'No URLs' }, { status: 400 })
+
+    const auth = getAuth(['https://www.googleapis.com/auth/indexing'])
+    const indexing = google.indexing({ version: 'v3', auth })
+    let success = 0
+    let failed = 0
+
+    for (const url of urls.slice(0, 10)) {
+      try {
+        await indexing.urlNotifications.publish({
+          requestBody: { url, type: 'URL_UPDATED' },
+        })
+        await admin.from('indexing_cache').upsert(
+          { url, index_requested_at: new Date().toISOString() },
+          { onConflict: 'url' }
+        )
+        success++
+      } catch {
+        failed++
+      }
+      await new Promise(r => setTimeout(r, 500))
+    }
+
+    return NextResponse.json({ success, failed, total: success + failed })
+  }
+
+  // ─── IndexNow — submit URLs to Bing/Yandex/Google ─────────────────────────
+  if (action === 'indexnow-submit') {
+    const { urls } = body
+    if (!urls?.length) return NextResponse.json({ error: 'No URLs' }, { status: 400 })
+
+    const batch = urls.slice(0, 100) // IndexNow allows up to 10,000 but we batch
+    const results: { engine: string; status: number; ok: boolean }[] = []
+
+    const payload = {
+      host: 'marineyard.com',
+      key: INDEXNOW_KEY,
+      keyLocation: `${SITE_URL}/${INDEXNOW_KEY}.txt`,
+      urlList: batch,
+    }
+
+    // Submit to multiple IndexNow endpoints
+    const engines = [
+      { name: 'Bing', url: 'https://www.bing.com/indexnow' },
+      { name: 'Yandex', url: 'https://yandex.com/indexnow' },
+      { name: 'IndexNow.org', url: 'https://api.indexnow.org/indexnow' },
+    ]
+
+    for (const engine of engines) {
+      try {
+        const res = await fetch(engine.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10000),
+        })
+        results.push({ engine: engine.name, status: res.status, ok: res.ok || res.status === 200 || res.status === 202 })
+      } catch (err: any) {
+        results.push({ engine: engine.name, status: 0, ok: false })
+      }
+    }
+
+    // Save indexnow_requested_at for each URL in batch
+    const anyOk = results.some(r => r.ok)
+    if (anyOk) {
+      const now = new Date().toISOString()
+      for (const url of batch) {
+        await admin.from('indexing_cache').upsert(
+          { url, indexnow_requested_at: now },
+          { onConflict: 'url' }
+        )
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      submitted: batch.length,
+      engines: results,
+    })
+  }
+
+  // ─── Sitemap Submit — submit sitemap to Google Search Console ────────────
+  if (action === 'submit-sitemap') {
+    const results: { engine: string; ok: boolean; detail: string }[] = []
+
+    // Google: Submit via Search Console API
+    try {
+      const auth = getAuth(['https://www.googleapis.com/auth/webmasters'])
+      const sc = google.searchconsole({ version: 'v1', auth })
+      await (sc as any).sitemaps.submit({
+        siteUrl: await searchConsoleProperty(),
+        feedpath: `${SITE_URL}/sitemap.xml`,
+      })
+      results.push({ engine: 'Google Search Console', ok: true, detail: 'Sitemap submitted' })
+    } catch (err: any) {
+      results.push({ engine: 'Google Search Console', ok: false, detail: googleErrorMessage(err).slice(0, 160) })
+    }
+
+    // Bing: Submit via IndexNow (Bing deprecated ping endpoint)
+    try {
+      const res = await fetch('https://www.bing.com/indexnow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          host: 'marineyard.com',
+          key: INDEXNOW_KEY,
+          keyLocation: `${SITE_URL}/${INDEXNOW_KEY}.txt`,
+          urlList: [`${SITE_URL}/sitemap.xml`],
+        }),
+        signal: AbortSignal.timeout(10000),
+      })
+      results.push({ engine: 'Bing (IndexNow)', ok: res.ok || res.status === 202, detail: `Status ${res.status}` })
+    } catch {
+      results.push({ engine: 'Bing (IndexNow)', ok: false, detail: 'Request failed' })
+    }
+
+    // Bing Webmaster Tools: register the sitemap itself when an API key is set.
+    if (bingConfigured()) {
+      try {
+        await submitBingSitemap(`${SITE_URL}/sitemap.xml`)
+        results.push({ engine: 'Bing Webmaster Tools', ok: true, detail: 'Sitemap submitted' })
+      } catch (err: any) {
+        results.push({ engine: 'Bing Webmaster Tools', ok: false, detail: String(err?.message || err).slice(0, 160) })
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      submitted: results,
+      sitemapUrl: `${SITE_URL}/sitemap.xml`,
+      timestamp: new Date().toISOString(),
+    })
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
+}

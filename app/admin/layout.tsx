@@ -1,0 +1,17 @@
+import { createClient } from '@/lib/server-client'
+import { redirect } from 'next/navigation'
+import { isAdminEmail } from '@/lib/admin'
+import AdminShell from './AdminShell'
+
+export const metadata = { title: 'Admin Dashboard — MarineYard' }
+
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user || !isAdminEmail(user.email)) {
+    redirect('/')
+  }
+
+  return <AdminShell userEmail={user.email ?? ''}>{children}</AdminShell>
+}

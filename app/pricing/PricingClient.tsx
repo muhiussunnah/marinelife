@@ -1,0 +1,550 @@
+'use client'
+import { useEffect, useState } from 'react'
+import Link from 'next/link'  // kept for success banner dashboard link
+import { useRouter } from 'next/navigation'
+import {
+  Check, Sparkles, Loader2, ShieldCheck, RefreshCcw, Gift,
+  Infinity as InfinityIcon, CreditCard, Star, Zap, Flame,
+} from 'lucide-react'
+import { initializePaddle, type Paddle } from '@paddle/paddle-js'
+import { createClient } from '@/lib/browser-client'
+
+/**
+ * Pricing page — "new subscriber" offer structure:
+ *
+ *   • 7-day free trial (configured at each price level in Paddle dashboard)
+ *   • 50% off first month (Paddle discount code auto-applied at checkout via
+ *     NEXT_PUBLIC_PADDLE_LAUNCH_DISCOUNT_CODE env var)
+ *   • 14-day money-back guarantee (Paddle-hosted)
+ *   • Cancel anytime (Paddle customer portal, 1 click)
+ *
+ * All four promises show in the sticky offer ribbon at the very top, again
+ * in the trust strip below the cards, and inside each card's bulleted list.
+ * Goal: make the "Due on $NEXT_MONTH" line in Paddle's mandatory checkout
+ * disclosure feel safe rather than scary — users see refund + cancel +
+ * trial everywhere before they commit.
+ */
+
+// ── Subscription plan definitions ─────────────────────────────────────
+const PACKS = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    tagline: 'Occasional sellers clearing surplus spares',
+    regularPrice: 4.99,
+    firstMonthPrice: 2.49,  // 50% off first month
+    credits: 120,
+    identifications: 12,
+    popular: false,
+    emphasis: false,
+    icon: Zap,
+    features: [
+      '120 credits every month (12 listings/mo)',
+      '7-day free trial — full access',
+      '50% off your first paid month',
+      '14-day money-back guarantee',
+      'Listings go live instantly',
+      'Up to 8 photos per listing',
+      'Buyer inquiries in your dashboard',
+      'Cancel anytime, 1 click',
+    ],
+  },
+  {
+    id: 'explorer',
+    name: 'Explorer',
+    tagline: 'Chandlers & superintendents who list often',
+    regularPrice: 9.99,
+    firstMonthPrice: 4.99,
+    credits: 550,
+    identifications: 55,
+    popular: true,
+    emphasis: true,
+    icon: Star,
+    features: [
+      '550 credits every month (55 listings/mo)',
+      '7-day free trial — full access',
+      '50% off your first paid month',
+      '14-day money-back guarantee',
+      'Everything in Starter',
+      'Featured badge on every listing',
+      'Shown above free listings in search',
+      'Priority placement in categories',
+    ],
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    tagline: 'Surplus dealers, yards & fleet managers',
+    regularPrice: 19.99,
+    firstMonthPrice: 9.99,
+    credits: 1200,
+    identifications: 120,
+    popular: false,
+    emphasis: false,
+    icon: Flame,
+    features: [
+      '1200 credits every month (120 listings/mo)',
+      '7-day free trial — full access',
+      '50% off your first paid month',
+      '14-day money-back guarantee',
+      'Everything in Explorer',
+      'Top placement across the marketplace',
+      'Priority customer support',
+      'Best value per listing',
+    ],
+  },
+]
+
+// Map pack id → price ID from env
+const PRICE_IDS: Record<string, string> = {
+  starter:  process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID  ?? '',
+  explorer: process.env.NEXT_PUBLIC_PADDLE_EXPLORER_PRICE_ID ?? '',
+  pro:      process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE_ID      ?? '',
+}
+
+// Launch offer discount code — set in Paddle dashboard + env var.
+// If unset, checkout opens without a discount (trial still works).
+const LAUNCH_DISCOUNT_CODE = process.env.NEXT_PUBLIC_PADDLE_LAUNCH_DISCOUNT_CODE ?? ''
+
+export default function PricingClient() {
+  const router   = useRouter()
+  const [paddle,   setPaddle]   = useState<Paddle | null>(null)
+  const [userId,   setUserId]   = useState<string | null>(null)
+  const [buying,   setBuying]   = useState<string | null>(null)
+  const [success,  setSuccess]  = useState<string | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+
+  // ── Load Paddle JS SDK ──────────────────────────────────────────
+  useEffect(() => {
+    const env = (process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT ?? 'sandbox') as 'sandbox' | 'production'
+    const token = process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN ?? ''
+    if (!token) return
+    initializePaddle({
+      environment: env,
+      token,
+      // Wire checkout event callbacks so we can reset buying state + log
+      // Paddle's specific error code (instead of dying silently on 400s).
+      eventCallback: (event: any) => {
+        if (event?.name === 'checkout.error') {
+          // eslint-disable-next-line no-console
+          console.error('[Paddle] checkout.error', event?.data)
+          setBuying(null)
+        }
+        if (event?.name === 'checkout.closed') {
+          setBuying(null)
+        }
+        if (event?.name === 'checkout.completed') {
+          // Derive packId from passed customData so we show the right banner
+          const pid = event?.data?.custom_data?.packId as string | undefined
+          if (pid) {
+            setSuccess(pid)
+            setTimeout(() => setSuccess(null), 8000)
+          }
+          setBuying(null)
+        }
+      },
+    }).then(p => { if (p) setPaddle(p) })
+  }, [])
+
+  // ── Get current user ────────────────────────────────────────────
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then((res: any) => {
+      setUserId(res?.data?.user?.id ?? null)
+      setAuthReady(true)
+    })
+  }, [])
+
+  // ── Open Paddle checkout ────────────────────────────────────────
+  const handleBuy = (packId: string) => {
+    if (!authReady) return
+    if (!userId) {
+      router.push(`/login?next=/pricing`)
+      return
+    }
+
+    const priceId = PRICE_IDS[packId]
+    if (!priceId || !process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN) {
+      // Checkout isn't connected yet (Paddle price IDs / client token unset).
+      router.push(`/contact?plan=${packId}`)
+      return
+    }
+    if (!paddle) return
+
+    setBuying(packId)
+
+    paddle.Checkout.open({
+      items: [{ priceId, quantity: 1 }],
+      customData: { userId, packId },
+      // Auto-apply the launch discount if the env var is set.
+      ...(LAUNCH_DISCOUNT_CODE ? { discountCode: LAUNCH_DISCOUNT_CODE } : {}),
+      settings: {
+        theme: 'light',
+        displayMode: 'overlay',
+        locale: 'en',
+      },
+    })
+  }
+
+  return (
+    <div className="min-h-screen pt-24 pb-16 px-6" style={{ background: 'var(--bg-primary)' }}>
+      <div className="max-w-7xl mx-auto">
+
+        {/* ── Promo ribbon (prominent, above hero) ──────────────────
+            "LAUNCH OFFER" badge dropped at site owner's request — keep
+            the perks visible on their own with the gift icon as the
+            single visual anchor. */}
+        <div
+          className="mb-8 rounded-2xl p-4 sm:p-5 text-center"
+          style={{
+            background: 'linear-gradient(90deg, rgba(8,145,178,0.12), rgba(8,145,178,0.06))',
+            border: '1px solid rgba(8,145,178,0.35)',
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm sm:text-base">
+            <span className="inline-flex items-center" style={{ color: '#0891b2' }}>
+              <Gift className="w-5 h-5" />
+            </span>
+            <span style={{ color: 'var(--text-primary)' }}>
+              <strong>7 days free</strong>
+            </span>
+            <span className="opacity-60" style={{ color: 'var(--text-primary)' }}>·</span>
+            <span style={{ color: 'var(--text-primary)' }}>
+              <strong>50% off</strong> your first month
+            </span>
+            <span className="opacity-60" style={{ color: 'var(--text-primary)' }}>·</span>
+            <span style={{ color: 'var(--text-primary)' }}>
+              <strong>14-day refund</strong>
+            </span>
+            <span className="opacity-60" style={{ color: 'var(--text-primary)' }}>·</span>
+            <span style={{ color: 'var(--text-primary)' }}>
+              <strong>Cancel anytime</strong>
+            </span>
+          </div>
+        </div>
+
+        {/* ── Header ── */}
+        <div className="text-center mb-10 sm:mb-14">
+          <h1 className="font-playfair text-4xl sm:text-5xl md:text-6xl font-bold mb-4 leading-tight" style={{ color: 'var(--text-primary)' }}>
+            Try risk-free for <span style={{ color: 'var(--accent)' }}>7 days</span>.<br className="hidden sm:block" />
+            Then save 50% on month one.
+          </h1>
+          <p className="text-lg sm:text-xl max-w-2xl mx-auto" style={{ color: 'var(--text-muted)' }}>
+            Monthly plans with fresh credits every month. Cancel from your dashboard in 1 click. 14-day money-back guarantee, no questions asked.
+          </p>
+        </div>
+
+        {/* ── Success banner ── */}
+        {success && (
+          <div
+            className="mb-8 p-4 rounded-xl flex items-center gap-3 text-sm font-medium"
+            style={{ background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.35)', color: '#22c55e' }}
+          >
+            <ShieldCheck className="w-5 h-5 flex-shrink-0" />
+            You&apos;re in! Your 7-day trial is active — visit your{' '}
+            <Link href="/dashboard" className="underline font-semibold">dashboard</Link> to start listing.
+          </div>
+        )}
+
+        {/* ── Pricing cards ── */}
+        <div className="grid md:grid-cols-3 gap-6 lg:gap-8 mb-16 items-start">
+          {PACKS.map((pack) => {
+            const savings = (pack.regularPrice - pack.firstMonthPrice).toFixed(2)
+            const Icon = pack.icon
+            return (
+              <div key={pack.id} className={`relative ${pack.popular ? 'pt-6' : ''}`}>
+                {pack.popular && (
+                  <div
+                    className="absolute top-0 left-1/2 -translate-x-1/2 z-10 px-5 py-1.5 rounded-full flex items-center gap-1.5 shadow-lg whitespace-nowrap"
+                    style={{ background: 'var(--accent)', color: '#fff' }}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span className="text-xs font-bold tracking-wide">MOST POPULAR</span>
+                  </div>
+                )}
+                <div
+                  className="relative p-7 sm:p-8 rounded-2xl card-lift card-glow h-full flex flex-col transition-all"
+                  style={{
+                    background: 'var(--bg-card)',
+                    border: pack.popular ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    boxShadow: pack.popular ? '0 20px 60px -20px rgba(8,145,178,0.35)' : undefined,
+                  }}
+                >
+                  {/* Free-trial pill at the top */}
+                  <div
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider w-fit mb-4"
+                    style={{ background: 'rgba(8,145,178,0.12)', color: '#0891b2', border: '1px solid rgba(8,145,178,0.3)' }}
+                  >
+                    <Gift className="w-3 h-3" /> 7 days free
+                  </div>
+
+                  {/* Plan name + icon */}
+                  <div className="flex items-center gap-2 mb-1">
+                    <Icon className="w-5 h-5" style={{ color: 'var(--accent)' }} />
+                    <h2 className="font-playfair text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>
+                      {pack.name}
+                    </h2>
+                  </div>
+                  <p className="text-xs mb-5" style={{ color: 'var(--text-muted)' }}>
+                    {pack.tagline}
+                  </p>
+
+                  {/* Price display — first-month discount hero, strike-through regular, then-amount */}
+                  <div className="mb-6">
+                    <div className="flex items-baseline gap-2.5">
+                      <span className="font-playfair text-5xl font-bold" style={{ color: 'var(--accent)' }}>
+                        ${pack.firstMonthPrice.toFixed(2)}
+                      </span>
+                      <span className="text-sm line-through opacity-60" style={{ color: 'var(--text-muted)' }}>
+                        ${pack.regularPrice.toFixed(2)}
+                      </span>
+                    </div>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      first month · save ${savings}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      then <strong style={{ color: 'var(--text-primary)' }}>${pack.regularPrice.toFixed(2)}/month</strong>, cancel anytime
+                    </p>
+                  </div>
+
+                  {/* Feature list */}
+                  <ul className="space-y-2.5 mb-7 flex-1">
+                    {pack.features.map((feature, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <Check className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
+                        <span className="text-sm" style={{ color: 'var(--text-primary)' }}>{feature}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {/* ── Subscribe button ── */}
+                  {success === pack.id ? (
+                    <div
+                      className="w-full px-6 py-3.5 rounded-lg font-semibold text-center text-sm"
+                      style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)' }}
+                    >
+                      ✓ Trial activated — enjoy!
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleBuy(pack.id)}
+                      disabled={buying !== null || !authReady}
+                      className="w-full px-6 py-3.5 rounded-lg font-semibold transition-opacity disabled:opacity-60 flex items-center justify-center gap-2"
+                      style={{
+                        background: pack.popular ? 'var(--btn-primary)' : 'var(--accent-bg)',
+                        color: pack.popular ? '#fff' : 'var(--text-primary)',
+                        border: pack.popular ? 'none' : '1px solid var(--border-hover)',
+                      }}
+                    >
+                      {buying === pack.id ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Opening checkout…
+                        </>
+                      ) : !authReady ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : !userId ? (
+                        `Sign in to Start ${pack.name} Trial`
+                      ) : (
+                        `Start 7-day ${pack.name} Trial →`
+                      )}
+                    </button>
+                  )}
+
+                  {/* Trust microcopy under button */}
+                  <div className="mt-3 text-center">
+                    <p className="text-xs" style={{ color: 'var(--text-primary)' }}>
+                      <RefreshCcw className="inline w-3 h-3 mr-1 -mt-0.5" style={{ color: 'var(--accent)' }} />
+                      14-day money-back · Cancel anytime
+                    </p>
+                    <p className="text-[11px] mt-1" style={{ color: 'var(--text-faint)' }}>
+                      Secure checkout by{' '}
+                      <a
+                        href="https://paddle.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hover:underline"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Paddle
+                      </a>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* ── Expanded trust strip ── */}
+        <div className="flex flex-wrap justify-center gap-3 sm:gap-4 mb-20">
+          {[
+            { icon: <Gift className="w-4 h-4" />,        text: '7-day free trial' },
+            { icon: <Sparkles className="w-4 h-4" />,    text: '50% off first month' },
+            { icon: <RefreshCcw className="w-4 h-4" />,  text: '14-day money-back guarantee' },
+            { icon: <ShieldCheck className="w-4 h-4" />, text: 'Cancel anytime, 1 click' },
+            { icon: <InfinityIcon className="w-4 h-4"/>, text: 'Fresh credits every month' },
+            { icon: <CreditCard className="w-4 h-4" />,  text: 'Secure 256-bit SSL' },
+          ].map((badge, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-xs sm:text-sm font-medium"
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+            >
+              <span style={{ color: 'var(--accent)' }}>{badge.icon}</span>
+              {badge.text}
+            </div>
+          ))}
+        </div>
+
+        {/* ── How the subscription works ── */}
+        <div className="mb-20 p-6 sm:p-10 rounded-2xl" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+          <h2 className="font-playfair text-3xl font-bold text-center mb-3" style={{ color: 'var(--text-primary)' }}>
+            How It Works
+          </h2>
+          <p className="text-center text-sm sm:text-base mb-10 max-w-2xl mx-auto" style={{ color: 'var(--text-muted)' }}>
+            Subscribe to any paid plan — first 7 days are free, no charges. Your first paid month is 50% off, and you can cancel anytime — Netflix-style. Or stay on the free plan — 9 listings, no card needed.
+          </p>
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8">
+            {[
+              { num: '1', title: 'Start your 7-day free trial', sub: 'Full plan access, no charges during trial' },
+              { num: '2', title: '50% off your first paid month', sub: 'Auto-applied at checkout — no code needed' },
+              { num: '3', title: 'Credits refresh every month', sub: 'Use-it-or-lose-it, fresh each cycle' },
+              { num: '4', title: 'Cancel anytime', sub: '1-click from dashboard, full access until period ends' },
+            ].map((item) => (
+              <div key={item.num} className="text-center">
+                <div className="w-12 h-12 rounded-full mx-auto mb-4 flex items-center justify-center font-playfair text-xl font-bold" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
+                  {item.num}
+                </div>
+                <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>{item.title}</p>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{item.sub}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Value comparison table ── */}
+        <div className="mb-20">
+          <h2 className="font-playfair text-3xl font-bold text-center mb-4" style={{ color: 'var(--text-primary)' }}>
+            Value Comparison
+          </h2>
+          <p className="text-center text-sm mb-10" style={{ color: 'var(--text-muted)' }}>
+            Most marine classifieds charge per ad. MarineYard gives you a fresh listing allowance every month, with a free trial and a first-month discount.
+          </p>
+          <div className="overflow-x-auto rounded-xl" style={{ border: '1px solid var(--border)' }}>
+            <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-secondary)' }}>
+                  <th className="p-4 text-left text-sm font-semibold" style={{ color: 'var(--text-primary)' }}></th>
+                  <th className="p-4 text-center text-sm font-semibold" style={{ color: 'var(--text-muted)' }}>Free</th>
+                  <th className="p-4 text-center text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Starter</th>
+                  <th className="p-4 text-center text-sm font-semibold" style={{ color: 'var(--accent)' }}>Explorer ⭐</th>
+                  <th className="p-4 text-center text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Pro</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { label: 'Price',            vals: ['$0', '$4.99/mo', '$9.99/mo', '$19.99/mo'] },
+                  { label: 'First month',      vals: ['—', '$2.49 (50% off)', '$4.99 (50% off)', '$9.99 (50% off)'] },
+                  { label: 'Free trial',       vals: ['—', '7 days', '7 days', '7 days'] },
+                  { label: 'Listings',         vals: ['9 (one-time)', '12 / month', '55 / month', '120 / month'] },
+                  { label: 'Cost per listing', vals: ['$0', '$0.42', '$0.18', '$0.17'] },
+                  { label: 'Placement',        vals: ['Standard', 'Standard', 'Featured', 'Top'] },
+                  { label: 'Support',          vals: ['Email', 'Email', 'Email', 'Priority'] },
+                  { label: 'Refund guarantee', vals: ['—', '14 days', '14 days', '14 days'] },
+                ].map((row, i) => (
+                  <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td className="p-4 font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{row.label}</td>
+                    {row.vals.map((val, j) => (
+                      <td
+                        key={j}
+                        className="p-4 text-center text-sm"
+                        style={{
+                          color: j === 0 ? 'var(--text-muted)' : 'var(--text-primary)',
+                          fontWeight: j === 2 ? 600 : 400,
+                          background: j === 2 ? 'rgba(8,145,178,0.05)' : 'transparent',
+                        }}
+                      >
+                        {val}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ── FAQ ── */}
+        <div className="max-w-3xl mx-auto mb-20">
+          <h2 className="font-playfair text-3xl font-bold text-center mb-10" style={{ color: 'var(--text-primary)' }}>
+            Frequently Asked Questions
+          </h2>
+          <div className="space-y-4">
+            {[
+              {
+                q: 'How does the 7-day free trial work?',
+                a: 'Start any plan — you get full access immediately. Paddle charges $0 during the 7-day trial. On day 8, you\'re charged half-price for your first month. Cancel anytime during the trial with 1 click and pay $0.',
+              },
+              {
+                q: 'How do I get the 50% off first-month discount?',
+                a: 'It\'s auto-applied at checkout — no code to type. You\'ll see the discounted amount on the Paddle checkout screen. After your first paid month, you continue at the regular monthly price.',
+              },
+              {
+                q: 'Can I cancel anytime?',
+                a: 'Yes, 1 click from your dashboard. Cancel during the 7-day trial = pay $0. Cancel after = keep full access until the end of your current billing period, then your plan returns to the free tier. Listings you already published stay online.',
+              },
+              {
+                q: 'What\'s the 14-day money-back guarantee?',
+                a: 'After your first charge, you have 14 days to request a full refund — no questions asked. Just contact us or reply to Paddle\'s receipt email. Instant refund to your original payment method.',
+              },
+              {
+                q: 'How do credits work each month?',
+                a: 'Each listing uses 10 credits. On your billing date your balance refreshes to the plan allowance (120 / 550 / 1200 credits = 12 / 55 / 120 listings). Unused credits do not carry over, but listings you already published stay live.',
+              },
+              {
+                q: 'Do my listings expire?',
+                a: 'No. A listing stays online until you mark it sold, hide it or delete it. Editing a listing is always free.',
+              },
+              {
+                q: 'Is there a free tier?',
+                a: 'Yes — every new account gets 90 credits, enough for 9 listings, with no credit card. Paid plans add 12–120 listings every month plus featured placement.',
+              },
+              {
+                q: 'What does featured placement mean?',
+                a: 'Explorer listings carry a Featured badge and appear above standard listings in search and category pages. Pro listings get a Top badge and the very first positions across the marketplace.',
+              },
+              {
+                q: 'Can I change plans?',
+                a: 'Yes. Upgrade anytime — prorated amount charged immediately, new credit allowance activated. Downgrade takes effect at your next billing period.',
+              },
+              {
+                q: 'Who processes the payment?',
+                a: 'Paddle.com — Merchant of Record. They handle tax globally (US sales tax, EU VAT, etc.), fraud protection, and chargebacks. You can manage your subscription directly through Paddle as well.',
+              },
+            ].map((faq, i) => (
+              <details
+                key={i}
+                className="group p-5 sm:p-6 rounded-xl transition-all"
+                style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+              >
+                <summary
+                  className="font-semibold cursor-pointer flex items-start justify-between gap-3 list-none text-sm sm:text-base"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {faq.q}
+                  <span className="text-xl leading-none flex-shrink-0 transition-transform group-open:rotate-45" style={{ color: 'var(--accent)' }}>+</span>
+                </summary>
+                <p className="mt-3 text-sm leading-relaxed" style={{ color: 'var(--text-muted)' }}>{faq.a}</p>
+              </details>
+            ))}
+          </div>
+        </div>
+
+        {/* No final CTA here — the site-wide "Start Identifying Safely
+            Today" block (rendered by Footer.tsx on every page) covers it.
+            Having two green CTAs stacked was visually redundant. */}
+      </div>
+    </div>
+  )
+}

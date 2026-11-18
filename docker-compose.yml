@@ -1,0 +1,99 @@
+# MarineYard on Coolify: the Next.js app + its own PostgreSQL.
+#
+# Coolify → Project "marineyard" → New Resource → this GitHub repo →
+# Build Pack "Docker Compose". Coolify fills every SERVICE_* variable itself
+# (random passwords), so no secret is created or copied by hand:
+#   SERVICE_PASSWORD_64_BETTERAUTH → session signing secret
+#   SERVICE_PASSWORD_CRON          → scheduled-publish cron secret
+#
+# Optional — set in Coolify → Environment Variables when you have them:
+#   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google sign-in (OAuth web client;
+#       redirect URI https://marineyard.com/api/auth/callback/google)
+#   GA_MEASUREMENT_ID                        Google Analytics 4 (G-XXXXXXX)
+#   GOOGLE_SITE_VERIFICATION                 Search Console HTML-tag token
+#   BING_SITE_VERIFICATION                   Bing Webmaster msvalidate.01 token
+#   GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_PRIVATE_KEY, GA4_PROPERTY_ID,
+#   GSC_SITE_URL, BING_WEBMASTER_API_KEY, BING_SITE_URL   admin SEO dashboards
+#   PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET, NEXT_PUBLIC_PADDLE_*   subscriptions
+#   WRITERFY_API_TOKEN                       publish Resources articles from Writerfy
+#   ADMIN_EMAILS                             extra admin logins (comma-separated)
+#   SERPAPI_KEY                              admin rank tracker
+#
+# Set the domain on the "app" service: https://marineyard.com,https://www.marineyard.com
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_PADDLE_CLIENT_TOKEN: ${NEXT_PUBLIC_PADDLE_CLIENT_TOKEN:-}
+        NEXT_PUBLIC_PADDLE_ENVIRONMENT: ${NEXT_PUBLIC_PADDLE_ENVIRONMENT:-production}
+        NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID: ${NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID:-}
+        NEXT_PUBLIC_PADDLE_PRO_PRICE_ID: ${NEXT_PUBLIC_PADDLE_PRO_PRICE_ID:-}
+        NEXT_PUBLIC_PADDLE_EXPLORER_PRICE_ID: ${NEXT_PUBLIC_PADDLE_EXPLORER_PRICE_ID:-}
+        NEXT_PUBLIC_PADDLE_LAUNCH_DISCOUNT_CODE: ${NEXT_PUBLIC_PADDLE_LAUNCH_DISCOUNT_CODE:-}
+    environment:
+      - SERVICE_FQDN_APP_3000
+      - DATABASE_URL=postgres://${SERVICE_USER_POSTGRES}:${SERVICE_PASSWORD_POSTGRES}@db:5432/${POSTGRES_DB:-marineyard}
+      - NEXT_PUBLIC_SITE_URL=https://marineyard.com
+      # Prefer IPv4: the container cannot reach some Google API hosts over IPv6.
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+      - BETTER_AUTH_SECRET=${SERVICE_PASSWORD_64_BETTERAUTH}
+      - CRON_SECRET=${SERVICE_PASSWORD_CRON}
+      - UPLOAD_DIR=/app/uploads
+      - TRUSTED_ORIGINS=${TRUSTED_ORIGINS:-}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
+      - GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID:-}
+      - GOOGLE_SITE_VERIFICATION=${GOOGLE_SITE_VERIFICATION:-}
+      - BING_SITE_VERIFICATION=${BING_SITE_VERIFICATION:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - PADDLE_API_KEY=${PADDLE_API_KEY:-}
+      - PADDLE_WEBHOOK_SECRET=${PADDLE_WEBHOOK_SECRET:-}
+      - NEXT_PUBLIC_PADDLE_ENVIRONMENT=${NEXT_PUBLIC_PADDLE_ENVIRONMENT:-production}
+      - NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID=${NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID:-}
+      - NEXT_PUBLIC_PADDLE_PRO_PRICE_ID=${NEXT_PUBLIC_PADDLE_PRO_PRICE_ID:-}
+      - NEXT_PUBLIC_PADDLE_EXPLORER_PRICE_ID=${NEXT_PUBLIC_PADDLE_EXPLORER_PRICE_ID:-}
+      - WRITERFY_API_TOKEN=${WRITERFY_API_TOKEN:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_SERVICE_ACCOUNT_EMAIL=${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}
+      - GOOGLE_PRIVATE_KEY=${GOOGLE_PRIVATE_KEY:-}
+      - GA4_PROPERTY_ID=${GA4_PROPERTY_ID:-}
+      - GSC_SITE_URL=${GSC_SITE_URL:-}
+      - BING_WEBMASTER_API_KEY=${BING_WEBMASTER_API_KEY:-}
+      - BING_SITE_URL=${BING_SITE_URL:-}
+      - SERPAPI_KEY=${SERPAPI_KEY:-}
+      - SERPAPI_KEY_BACKUP=${SERPAPI_KEY_BACKUP:-}
+      - SERPAPI_ACCOUNT_CREATED_AT=${SERPAPI_ACCOUNT_CREATED_AT:-}
+      - SERPAPI_ACCOUNT_CREATED_AT_BACKUP=${SERPAPI_ACCOUNT_CREATED_AT_BACKUP:-}
+    volumes:
+      - marineyard-uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${SERVICE_USER_POSTGRES}
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
+      - POSTGRES_DB=${POSTGRES_DB:-marineyard}
+    volumes:
+      - marineyard-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  marineyard-uploads:
+  marineyard-db:

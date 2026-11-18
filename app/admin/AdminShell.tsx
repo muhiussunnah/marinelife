@@ -1,0 +1,164 @@
+'use client'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import {
+  LayoutDashboard, FileText, Trophy, Globe, ShieldCheck, CreditCard,
+  Code, ListOrdered, Palette, Paintbrush, Droplet, LogOut, ChevronRight, Menu, X, Sun, Moon,
+  Home as HomeIcon, ExternalLink, BadgeDollarSign, Anchor,
+} from 'lucide-react'
+import { useState } from 'react'
+import { AdminModalProvider } from '@/components/admin/AdminModal'
+import { useTheme } from '@/components/providers/ThemeProvider'
+
+// Sidebar order:
+//   • Dashboard (`/admin`) is now the analytics surface — that's the
+//     first thing the owner wants to see on opening admin.
+//   • Subscription (`/admin/subscription`) is the old Dashboard — revenue,
+//     plans, recent customer activity. Placed mid-list since checking
+//     subscription health is a less-frequent task than content + SEO.
+//   • The old standalone "Analytics" entry was removed; /admin/analytics
+//     now redirects to /admin so older bookmarks keep working.
+const NAV = [
+  { href: '/admin',                 label: 'Dashboard',       icon: LayoutDashboard },
+  { href: '/admin/listings',        label: 'Listings',        icon: Anchor },
+  { href: '/admin/pages',           label: 'Pages',           icon: FileText },
+  { href: '/admin/homepage',        label: 'Homepage',        icon: HomeIcon },
+  { href: '/admin/rank-tracker',    label: 'Rank Tracker',    icon: Trophy },
+  { href: '/admin/seo-health',      label: 'SEO Health',      icon: ShieldCheck },
+  { href: '/admin/indexing-report', label: 'Indexing Report', icon: Globe },
+  { href: '/admin/subscription',    label: 'Subscriptions',   icon: CreditCard },
+  { href: '/admin/header-scripts',  label: 'Header Scripts',  icon: Code },
+  { href: '/admin/adify',           label: 'Adify — Ads',     icon: BadgeDollarSign },
+  { href: '/admin/external-links',  label: 'External Links',  icon: ExternalLink },
+  { href: '/admin/menus',           label: 'Menus',           icon: ListOrdered },
+  { href: '/admin/footer-settings', label: 'Footer Content',  icon: Palette },
+  { href: '/admin/theme',           label: 'Theme Colors',    icon: Droplet },
+  { href: '/admin/custom-css',      label: 'Custom CSS',      icon: Paintbrush },
+]
+
+export default function AdminShell({ children, userEmail }: { children: React.ReactNode; userEmail: string }) {
+  const pathname = usePathname()
+  const [open, setOpen] = useState(false)
+  const { theme, toggle } = useTheme()
+
+  const isActive = (href: string) => {
+    if (href === '/admin') return pathname === '/admin'
+    return pathname.startsWith(href)
+  }
+
+  const dark = theme === 'dark'
+
+  return (
+    <AdminModalProvider>
+    <div className="min-h-screen flex transition-colors duration-300" style={{ background: dark ? '#080c14' : '#f1f5f9' }}>
+
+      {/* ── Sidebar (desktop) ── */}
+      <aside className="hidden lg:flex flex-col w-[260px] border-r transition-colors duration-300" style={{ borderColor: dark ? 'rgba(255,255,255,0.06)' : '#e2e8f0', background: dark ? '#0c1120' : '#ffffff' }}>
+        {/* Logo */}
+        <div className="px-6 py-5 border-b" style={{ borderColor: dark ? 'rgba(255,255,255,0.06)' : '#e2e8f0' }}>
+          <Link href="/admin" className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center text-white text-sm font-bold shadow-lg shadow-sky-500/20">
+              M
+            </div>
+            <div>
+              <span className="text-[15px] font-bold tracking-tight" style={{ color: dark ? '#fff' : '#0f172a' }}>Admin</span>
+              <span className="text-[10px] ml-1.5 px-1.5 py-0.5 rounded-md bg-sky-500/10 text-sky-500 font-semibold border border-sky-500/20">
+                PRO
+              </span>
+            </div>
+          </Link>
+        </div>
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-5 space-y-1">
+          <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: dark ? '#64748b' : '#94a3b8' }}>Menu</p>
+          {NAV.map(({ href, label, icon: Icon }) => (
+            <Link
+              key={href}
+              href={href}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-200 ${
+                isActive(href)
+                  ? 'bg-gradient-to-r from-sky-500/15 to-sky-500/5 text-sky-400 shadow-sm shadow-sky-500/5'
+                  : ''
+              }`}
+              style={!isActive(href) ? { color: dark ? '#94a3b8' : '#64748b' } : undefined}
+            >
+              <Icon className="w-[18px] h-[18px]" />
+              {label}
+              {isActive(href) && <ChevronRight className="w-3.5 h-3.5 ml-auto opacity-60" />}
+            </Link>
+          ))}
+        </nav>
+
+        {/* Footer */}
+        <div className="px-4 py-4 border-t" style={{ borderColor: dark ? 'rgba(255,255,255,0.06)' : '#e2e8f0' }}>
+          <div className="flex items-center gap-3 mb-3 px-1">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400/20 to-sky-600/20 flex items-center justify-center text-sky-400 text-xs font-bold ring-1 ring-sky-500/20">
+              {userEmail[0].toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <p className="text-[12px] font-semibold truncate" style={{ color: dark ? '#fff' : '#0f172a' }}>{userEmail}</p>
+              <p className="text-[10px] font-medium" style={{ color: dark ? '#64748b' : '#94a3b8' }}>Administrator</p>
+            </div>
+          </div>
+          {/* Dark/Light toggle removed — site is light-mode only. */}
+          <Link
+            href="/"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] transition-colors"
+            style={{ color: dark ? '#64748b' : '#64748b' }}
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Back to site
+          </Link>
+        </div>
+      </aside>
+
+      {/* ── Mobile header ── */}
+      <div
+        className="lg:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-3 border-b backdrop-blur-xl transition-colors duration-300"
+        style={{ borderColor: dark ? 'rgba(255,255,255,0.06)' : '#e2e8f0', background: dark ? 'rgba(12,17,32,0.95)' : 'rgba(255,255,255,0.95)' }}
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-sky-500 to-blue-700 flex items-center justify-center text-white text-xs font-bold">M</div>
+          <span className="text-sm font-bold" style={{ color: dark ? '#fff' : '#0f172a' }}>Admin</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Dark/Light toggle removed — site is light-mode only. */}
+          <button onClick={() => setOpen(!open)} className="p-1" style={{ color: dark ? '#94a3b8' : '#64748b' }}>
+            {open ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile nav overlay */}
+      {open && (
+        <div className="lg:hidden fixed inset-0 z-40 pt-14 backdrop-blur-xl" style={{ background: dark ? 'rgba(12,17,32,0.98)' : 'rgba(255,255,255,0.98)' }}>
+          <nav className="px-4 py-4 space-y-1">
+            {NAV.map(({ href, label, icon: Icon }) => (
+              <Link
+                key={href}
+                href={href}
+                onClick={() => setOpen(false)}
+                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium ${
+                  isActive(href) ? 'bg-sky-500/10 text-sky-400' : ''
+                }`}
+                style={!isActive(href) ? { color: dark ? '#94a3b8' : '#64748b' } : undefined}
+              >
+                <Icon className="w-[18px] h-[18px]" />
+                {label}
+              </Link>
+            ))}
+          </nav>
+        </div>
+      )}
+
+      {/* ── Main content ── */}
+      <main className="flex-1 lg:pl-0 pt-14 lg:pt-0 overflow-auto">
+        <div className="p-5 lg:p-8 max-w-[1400px] mx-auto">
+          {children}
+        </div>
+      </main>
+    </div>
+    </AdminModalProvider>
+  )
+}

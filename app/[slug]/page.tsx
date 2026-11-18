@@ -1,0 +1,530 @@
+// Revalidate every 60s. Previously this used `force-dynamic`, which forced
+// every article page to re-render on every visit and produced 3+ second
+// TTFBs (the "blank gradient" pause). Editorial content rarely changes, so
+// 60s freshness is plenty — admin updates that need to propagate sooner can
+// call revalidatePath(`/${slug}`) from their save handler.
+// 10-minute ISR. Article pages are the #1 crawl target for search bots;
+// at 60s each page re-fetched its full HTML `content` from Supabase up to
+// once a minute per URL — across 100+ URLs that was the main egress drain.
+// 600s cuts regeneration ~10x. Admin edits still appear within 10 min, or
+// instantly via the admin "Clear Cache" button (revalidatePath).
+export const revalidate = 600
+
+import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+// next/image no longer needed here — featured-image hero was removed
+import Link from 'next/link'
+import { createCachedClient } from '@/lib/db'
+import { Anchor, ArrowRight } from 'lucide-react'
+import AuthorBlock from '@/components/blog/AuthorBlock'
+import BlogSidebar from '@/components/blog/BlogSidebar'
+import BlogComments from '@/components/blog/BlogComments'
+import LiveViewCount from '@/components/blog/LiveViewCount'
+import ArticleContent from '@/components/blog/ArticleContent'
+import PremiumGate from '@/components/PremiumGate'
+import ViewTracker from '@/components/blog/ViewTracker'
+import MarketplaceCTA from '@/components/blog/MarketplaceCTA'
+import { BLOG_HIDDEN_SLUGS } from '@/lib/blog-hidden-slugs'
+import { resolveFeaturedImage, dedupeProductHeadings } from '@/lib/content-helpers'
+import { getNofollowRules, applyNofollowRules } from '@/lib/external-links'
+import { BRAND, absoluteUrl } from '@/lib/brand'
+
+/* ── Supabase admin client — uses Next.js fetch cache (60s revalidate) so
+   repeat visits within the window are instant. The previous `cache: 'no-store'`
+   guaranteed deleted posts 404'd immediately but at the cost of a fresh DB
+   round-trip on every single request. */
+function getSupabase() {
+  return createCachedClient([], 60)
+}
+
+/* ── Inline-style policy ──
+ * We deliberately do NOT strip `style="…"` from saved post HTML any more.
+ *
+ * The previous helper removed every inline style at render time so the
+ * Tailwind prose classes could "win" the typography. That made sense
+ * back when posts could be pasted from Word/WordPress and arrive with
+ * `font-family: Times New Roman` noise — but the current authoring
+ * surfaces (admin RichEditor + Writerfy) emit INTENTIONAL inline styles
+ * that ARE the design: hero gradient cards, callout boxes, image
+ * sizing, Writerfy product blocks, etc. Stripping them killed designed
+ * hero cards that the editor previewed correctly but the public article
+ * rendered as plain text — flagged by the site owner.
+ *
+ * Inline styles always out-rank prose classes via CSS specificity,
+ * so designed content overrides defaults exactly where the author
+ * intended, and untouched paragraphs/headings still get prose typography.
+ *
+ * Trust model: post HTML is admin-authored (Writerfy + admin RichEditor
+ * both behind auth). The Writerfy publish endpoint already runs
+ * sanitize-html which strips <script>/<style> tags + javascript: URLs
+ * regardless of `allowedAttributes: false`, so leaving `style="…"`
+ * intact does NOT widen the XSS surface.
+ */
+
+/* ── Fetch one post by slug ── */
+async function getPost(slug: string) {
+  const supabase = getSupabase()
+  const fullSlug = slug.startsWith('/') ? slug : `/${slug}`
+  const { data } = await supabase
+    .from('blog_posts')
+    .select('*')
+    .eq('slug', fullSlug)
+    .eq('status', 'published')
+    .single()
+  return data
+}
+
+/* ── Fetch related posts (same category preferred, else random published) ── */
+async function getRelatedPosts(currentSlug: string, category?: string) {
+  const supabase = getSupabase()
+  const fullSlug = currentSlug.startsWith('/') ? currentSlug : `/${currentSlug}`
+
+  // Helper: drop policy / meta posts so they don't appear as "related"
+  // alongside editorial articles, then resolve featured_image
+  // (with fallback to first inline content image for legacy posts) so
+  // related-posts thumbnails are never broken even when an admin
+  // forgot to set one. Pull extras and filter so we still hit cap of 3.
+  const stripHidden = (rows: any[] | null | undefined) =>
+    (rows ?? [])
+      .filter((p) => !BLOG_HIDDEN_SLUGS.has(p.slug))
+      .slice(0, 3)
+      .map((p) => ({
+        ...p,
+        featured_image: p.featured_image || '',
+      }))
+
+  // Try same category first. `content` is needed for the image fallback.
+  if (category) {
+    const { data } = await supabase
+      .from('blog_posts')
+      .select('slug, title, excerpt, featured_image, category')
+      .eq('status', 'published')
+      .eq('category', category)
+      .neq('slug', fullSlug)
+      .order('published_at', { ascending: false })
+      .limit(6) // pull extra so we still fill 3 after filtering
+    const visible = stripHidden(data)
+    if (visible.length >= 2) return visible
+  }
+
+  // Fallback: any published posts
+  const { data } = await supabase
+    .from('blog_posts')
+    .select('slug, title, excerpt, featured_image, category')
+    .eq('status', 'published')
+    .neq('slug', fullSlug)
+    .order('published_at', { ascending: false })
+    .limit(6)
+  return stripHidden(data)
+}
+
+/* ── Dynamic metadata for SEO ── */
+
+const SITE_URL = BRAND.url
+const DEFAULT_OG_IMAGE = absoluteUrl(BRAND.ogImage)
+
+/**
+ * Build an absolute image URL safe to put in og:image / twitter:image.
+ *
+ * Three input shapes need to resolve cleanly:
+ *   • absolute URL  ("https://cdn.example.com/..."): use as-is.
+ *     The previous code blindly prepended SITE_URL, producing
+ *     "https://marineyard.comhttps://cdn.example.com/..."
+ *     which is unparseable — that's why Facebook/WhatsApp couldn't
+ *     fetch a thumbnail when sharing posts with external images.
+ *   • protocol-relative ("//cdn.example.com/x.jpg"): prefix with https.
+ *   • root-relative path ("/foo.webp"): prefix with SITE_URL.
+ *   • empty / null: caller falls back to DEFAULT_OG_IMAGE.
+ */
+function toAbsoluteImageUrl(src: string | null | undefined): string | null {
+  const s = (src || '').trim()
+  if (!s) return null
+  if (/^https?:\/\//i.test(s)) return s
+  if (s.startsWith('//')) return `https:${s}`
+  if (s.startsWith('/')) return `${SITE_URL}${s}`
+  // Bare filename — assume relative to site root.
+  return `${SITE_URL}/${s}`
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}): Promise<Metadata> {
+  const { slug } = await params
+  const post = await getPost(slug)
+  if (!post) return { title: 'Not Found' }
+  const title = post.meta_title || post.title
+  const description = post.meta_description || post.excerpt || ''
+  const url = `${SITE_URL}${post.slug}`
+
+  // Pick the post's effective image:
+  //   1. explicit featured_image (admin-set OR Writerfy upload)
+  //   2. first <img> embedded in the article body
+  //   3. site-wide default OG image
+  // ...then normalize to a fully-qualified absolute URL.
+  const resolved = resolveFeaturedImage(post.featured_image, post.content)
+  const absolute = toAbsoluteImageUrl(resolved)
+  const ogImageUrl = absolute || DEFAULT_OG_IMAGE
+
+  return {
+    title,
+    description,
+    alternates: { canonical: url },
+    openGraph: {
+      title,
+      description,
+      url,
+      type: 'article',
+      publishedTime: post.published_at || post.created_at,
+      modifiedTime: post.updated_at || post.published_at || post.created_at,
+      images: [{ url: ogImageUrl, width: 1200, height: 630, alt: title }],
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title,
+      description,
+      images: [ogImageUrl],
+    },
+  }
+}
+
+/* ── Page component ── */
+export default async function DynamicPostPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}) {
+  const { slug } = await params
+  const [post, nofollowRules] = await Promise.all([
+    getPost(slug),
+    // Fetch nofollow rules in parallel — they're tiny (a handful of rows
+    // at most) and the React.cache() wrapper means the article HTML and
+    // related-posts query share the same response within this request.
+    getNofollowRules(),
+  ])
+  if (!post) notFound()
+
+  const relatedPosts = await getRelatedPosts(slug, post.category)
+
+  // Apply admin-configured nofollow rules to the article HTML BEFORE it
+  // reaches the browser. This way Google et al see the final
+  // rel="nofollow" markup on first crawl, no client-side rewrite needed.
+  // Also dedupe product-heading duplicates emitted by Writerfy's AI flow
+  // (markdown heading + verbatim writerify-product-heading block landing
+  // back-to-back with the same text — fix in lib/content-helpers.ts).
+  const processedContent = applyNofollowRules(
+    dedupeProductHeadings(post.content || ''),
+    nofollowRules,
+  )
+  const articleHtml = processedContent
+
+  const publishedDate = post.published_at
+    ? new Date(post.published_at).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : 'Draft'
+
+  /* Build Article schema */
+  const schemaData = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Article',
+        headline: post.meta_title || post.title,
+        description: post.meta_description || post.excerpt || '',
+        image: toAbsoluteImageUrl(post.featured_image) || undefined,
+        author: {
+          '@type': 'Organization',
+          name: BRAND.name,
+          url: `${SITE_URL}/`,
+        },
+        publisher: {
+          '@type': 'Organization',
+          name: BRAND.name,
+          url: `${SITE_URL}/`,
+        },
+        mainEntityOfPage: `${SITE_URL}${post.slug}`,
+        datePublished: post.published_at || post.created_at,
+        dateModified: post.updated_at || post.published_at || post.created_at,
+        ...(post.is_premium && { isAccessibleForFree: false }),
+      },
+      {
+        '@type': 'BreadcrumbList',
+        itemListElement: [
+          { '@type': 'ListItem', position: 1, name: 'Home', item: `${SITE_URL}/` },
+          { '@type': 'ListItem', position: 2, name: 'Resources', item: absoluteUrl('/resources') },
+          { '@type': 'ListItem', position: 3, name: post.title },
+        ],
+      },
+    ],
+  }
+
+  const articleContentClasses = `rich-content prose prose-sm sm:prose-base max-w-none
+    prose-headings:font-playfair prose-headings:font-bold
+    prose-h2:text-2xl prose-h2:md:text-3xl prose-h2:mt-10 prose-h2:mb-4
+    prose-h3:text-xl prose-h3:mt-6 prose-h3:mb-3
+    prose-p:leading-relaxed prose-p:mb-4
+    prose-li:leading-relaxed
+    prose-a:font-medium prose-a:no-underline hover:prose-a:underline
+    prose-img:rounded-xl prose-img:mx-auto prose-img:max-w-full prose-img:h-auto
+    prose-table:text-sm prose-table:w-full prose-table:border-collapse
+    prose-th:p-3 prose-th:text-left prose-td:p-3
+    prose-blockquote:rounded-xl prose-blockquote:px-5 prose-blockquote:py-3
+    prose-pre:rounded-xl prose-pre:p-4
+    prose-hr:my-8`
+
+  const articleContentStyles = {
+    color: 'var(--text-muted)',
+    ['--tw-prose-headings' as string]: 'var(--text-primary)',
+    ['--tw-prose-links' as string]: 'var(--accent)',
+    ['--tw-prose-bold' as string]: 'var(--text-primary)',
+    ['--tw-prose-bullets' as string]: 'var(--accent)',
+    ['--tw-prose-counters' as string]: 'var(--accent)',
+    ['--tw-prose-th-borders' as string]: 'var(--border)',
+    ['--tw-prose-td-borders' as string]: 'var(--border)',
+    ['--tw-prose-hr' as string]: 'var(--border)',
+    ['--tw-prose-quote-borders' as string]: 'var(--accent)',
+    ['--tw-prose-code' as string]: 'var(--accent)',
+    ['--tw-prose-pre-bg' as string]: 'var(--bg-secondary)',
+    ['--tw-prose-pre-code' as string]: 'var(--text-muted)',
+  }
+
+  // Per-post custom JSON-LD schema overrides the default Article + BreadcrumbList
+  // schema. Only ONE <script type="application/ld+json"> is ever rendered so we
+  // never accidentally emit duplicates (which Google flags as a structured-data
+  // error). Admins can paste FAQPage, HowTo, Recipe, Product, etc. schema and it
+  // replaces the auto-generated Article schema for this single page.
+  let schemaToRender: string
+  if (post.custom_schema && post.custom_schema.trim()) {
+    try {
+      // Re-stringify so whitespace is normalized and any parse errors are caught
+      // at render-time rather than shipping broken JSON to Google.
+      schemaToRender = JSON.stringify(JSON.parse(post.custom_schema))
+    } catch {
+      // Invalid JSON — fall back to default so the page still gets valid schema.
+      schemaToRender = JSON.stringify(schemaData)
+    }
+  } else {
+    schemaToRender = JSON.stringify(schemaData)
+  }
+
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: schemaToRender }}
+      />
+
+      {/* Per-post custom CSS from the editor's "Custom CSS" sidebar field.
+          Injected inline after global CSS so author rules take precedence —
+          same model as WordPress's Additional CSS. */}
+      {post.custom_css && (
+        <style
+          data-post-custom-css={post.slug}
+          dangerouslySetInnerHTML={{ __html: post.custom_css }}
+        />
+      )}
+
+      <div
+        className="min-h-screen pt-24 pb-20"
+        style={{ background: 'var(--bg-primary)' }}
+      >
+        <div className="max-w-7xl mx-auto px-6">
+          <div className={`flex gap-10 items-start${post.layout === 'full-page' ? ' justify-center' : ''}`}>
+            <article className={`min-w-0 flex-1 ${post.layout === 'full-page' ? 'max-w-5xl mx-auto' : 'max-w-4xl'}`}>
+              {/* Breadcrumb */}
+              <nav
+                className="flex items-center gap-2 text-xs mb-8 flex-wrap"
+                style={{ color: 'var(--text-faint)' }}
+              >
+                <Link
+                  href="/"
+                  className="hover:underline"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Home
+                </Link>
+                <span>/</span>
+                <Link
+                  href="/resources"
+                  className="hover:underline"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  Resources
+                </Link>
+                <span>/</span>
+                <span>{post.title}</span>
+              </nav>
+
+              {/* Badges */}
+              <div className="mb-6">
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {post.category && (
+                    <span
+                      className="inline-block px-3 py-1 rounded-full text-xs font-bold"
+                      style={{
+                        background: 'var(--accent-bg)',
+                        color: 'var(--accent)',
+                      }}
+                    >
+                      {post.category}
+                    </span>
+                  )}
+                  {post.is_premium && (
+                    <span
+                      className="inline-block px-3 py-1 rounded-full text-xs font-bold"
+                      style={{ background: '#eab30820', color: '#eab308' }}
+                    >
+                      Premium
+                    </span>
+                  )}
+                </div>
+
+                {/* Title */}
+                <h1
+                  className="font-playfair text-3xl md:text-5xl font-bold leading-tight mb-4"
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  {post.title}
+                </h1>
+
+                <AuthorBlock updatedAt={publishedDate} name={post.author_name || undefined} role={post.author_role || undefined} />
+                <LiveViewCount slug={post.slug} className="mb-2" />
+                {/* Excerpt + featured-image hero intentionally removed
+                    from the individual article page — both were
+                    duplicating the article's own opening paragraph and
+                    inline images. The Resources listing card still uses
+                    excerpt + featured_image (those are admin-managed and
+                    auto-derived from content where empty). */}
+              </div>
+
+              {/* ── Main Content (HTML from rich editor) + auto TOC ──
+                  processedContent has already been stripped of inline
+                  styles and rewritten by applyNofollowRules() upstream. */}
+              {post.is_premium ? (
+                <PremiumGate inline>
+                  <ArticleContent
+                    html={articleHtml}
+                    className={articleContentClasses}
+                    style={articleContentStyles}
+                  />
+                </PremiumGate>
+              ) : (
+                <ArticleContent
+                  html={articleHtml}
+                  className={articleContentClasses}
+                  style={articleContentStyles}
+                />
+              )}
+
+              {/* Marketplace CTA — skipped when the post already places one via [marketplace-cta] */}
+              {!/\[marketplace-cta\]/i.test(articleHtml) && <MarketplaceCTA className="mt-10" />}
+
+              <hr
+                className="my-10 border-0 border-t"
+                style={{ borderColor: 'var(--border)' }}
+              />
+
+              <ViewTracker slug={post.slug} />
+              <BlogComments slug={post.slug} />
+
+              {/* Related Articles */}
+              {relatedPosts.length > 0 && (
+                <div className="mt-16 pt-12 not-prose" style={{ borderTop: '2px solid var(--border)' }}>
+                  <div className="flex items-center gap-3 mb-8">
+                    <div
+                      className="w-1 h-8 rounded-full flex-shrink-0"
+                      style={{ background: 'var(--accent)' }}
+                    />
+                    <div
+                      className="font-playfair font-bold"
+                      style={{ color: 'var(--text-primary)', fontSize: 'clamp(1.5rem, 3vw, 1.875rem)' }}
+                    >
+                      Related Articles
+                    </div>
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                    {relatedPosts.map((article: any) => {
+                      return (
+                        <Link
+                          key={article.slug}
+                          href={article.slug}
+                          className="group rounded-2xl overflow-hidden flex flex-col transition-all duration-300 hover:-translate-y-1"
+                          style={{
+                            background: 'var(--bg-card)',
+                            border: '1px solid var(--border)',
+                            textDecoration: 'none',
+                            boxShadow: '0 2px 12px var(--shadow)',
+                          }}
+                        >
+                          <div
+                            className="relative flex-shrink-0 overflow-hidden"
+                            style={{ height: '180px', background: 'var(--bg-secondary)' }}
+                          >
+                            {article.featured_image ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={article.featured_image}
+                                alt={article.title}
+                                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                              />
+                            ) : (
+                              <div
+                                className="w-full h-full flex items-center justify-center"
+                                style={{ background: 'linear-gradient(135deg, var(--accent-bg), var(--bg-secondary))' }}
+                              >
+                                <Anchor className="w-10 h-10 opacity-30" style={{ color: 'var(--accent)' }} />
+                              </div>
+                            )}
+                            {article.category && (
+                              <span
+                                className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-semibold"
+                                style={{ background: 'rgba(0,0,0,0.55)', color: '#fff', backdropFilter: 'blur(4px)' }}
+                              >
+                                {article.category}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="p-4 flex flex-col flex-1">
+                            <div
+                              className="font-playfair text-base font-bold mb-2 leading-snug line-clamp-2"
+                              style={{ color: 'var(--text-primary)' }}
+                            >
+                              {article.title}
+                            </div>
+                            {article.excerpt && (
+                              <p
+                                className="text-xs leading-relaxed flex-1 line-clamp-2 mb-3"
+                                style={{ color: 'var(--text-muted)' }}
+                              >
+                                {article.excerpt}
+                              </p>
+                            )}
+                            <div
+                              className="flex items-center gap-1 text-xs font-semibold mt-auto transition-gap group-hover:gap-2"
+                              style={{ color: 'var(--accent)' }}
+                            >
+                              Read Article <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                            </div>
+                          </div>
+                        </Link>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </article>
+
+            {/* Sidebar — hidden for full-page layout */}
+            {post.layout !== 'full-page' && <BlogSidebar />}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
