@@ -103,6 +103,9 @@ export default async function RootLayout({
         {process.env.BING_SITE_VERIFICATION && (
           <meta name="msvalidate.01" content={process.env.BING_SITE_VERIFICATION} />
         )}
+        {process.env.YANDEX_VERIFICATION && (
+          <meta name="yandex-verification" content={process.env.YANDEX_VERIFICATION} />
+        )}
         {/* RSS Feed for search engine auto-discovery */}
         <link rel="alternate" type="application/rss+xml" title="MarineYard Resources RSS Feed" href="/feed.xml" />
         {/* Preconnect to external origins — saves DNS+TCP+TLS time */}
