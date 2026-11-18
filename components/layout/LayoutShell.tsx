@@ -24,7 +24,6 @@ export default function LayoutShell({
   return (
     <AdifyProvider>
       <Navbar menuItems={menus?.header} />
-      <div style={{ height: 'var(--mi-bar-h, 0px)' }} aria-hidden="true" />
       {/* Adify — header strip (below the navbar; follows scroll when the
           unit's admin-controlled Sticky flag is on) */}
       <AdSlot placement="header" className="px-4" allowSticky />
