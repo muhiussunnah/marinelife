@@ -47,6 +47,7 @@ export const LISTING_CONDITIONS = [
   { value: 'used', label: 'Used – working' },
   { value: 'as-removed', label: 'Used – as removed' },
   { value: 'for-parts', label: 'For parts / scrap' },
+  { value: 'on-request', label: 'Condition on request' },
 ] as const
 
 export const CONDITION_LABEL: Record<string, string> = Object.fromEntries(
@@ -94,7 +95,17 @@ export interface PublicListing {
   /** 0 = standard, 1 = featured (Explorer / admin pick), 2 = top placement (Pro) */
   priority: number
   seller_name?: string | null
+  /** 'members' = any signed-in member sees contact details, 'paid' = paid plans only */
+  contact_tier?: string
+  is_public_offer?: boolean
+  meta_title?: string | null
+  meta_description?: string | null
 }
+
+/** Listings whose contact details need a paid plan ("paid leads"). */
+export const isPaidLead = (l: Pick<PublicListing, 'contact_tier'>) => l.contact_tier === 'paid'
+
+export const categoryPath = (slug: string) => `/listings/${slug}`
 
 export function formatPrice(l: Pick<PublicListing, 'price' | 'currency' | 'price_on_request'>) {
   if (l.price_on_request || l.price == null) return 'Price on request'

@@ -27,6 +27,7 @@ import MarketplaceCTA from '@/components/blog/MarketplaceCTA'
 import { BLOG_HIDDEN_SLUGS } from '@/lib/blog-hidden-slugs'
 import { resolveFeaturedImage, dedupeProductHeadings } from '@/lib/content-helpers'
 import { getNofollowRules, applyNofollowRules } from '@/lib/external-links'
+import { uploadedImageSize, imageAltFromHtml } from '@/lib/image-size'
 import { BRAND, absoluteUrl } from '@/lib/brand'
 
 /* ── Supabase admin client — uses Next.js fetch cache (60s revalidate) so
@@ -166,6 +167,16 @@ export async function generateMetadata({
   const resolved = resolveFeaturedImage(post.featured_image, post.content)
   const absolute = toAbsoluteImageUrl(resolved)
   const ogImageUrl = absolute || DEFAULT_OG_IMAGE
+  // Real pixel size of the image (read from the uploaded file) and the alt
+  // text the article gives it. Both are left out when they can't be read.
+  const size = absolute ? await uploadedImageSize(absolute) : { width: 1200, height: 630 }
+  const alt = absolute ? imageAltFromHtml(post.content, absolute) : 'MarineYard – ship spare parts marketplace'
+  const ogImage: { url: string; width?: number; height?: number; alt?: string } = { url: ogImageUrl }
+  if (size) {
+    ogImage.width = size.width
+    ogImage.height = size.height
+  }
+  if (alt) ogImage.alt = alt
 
   return {
     title,
@@ -178,7 +189,7 @@ export async function generateMetadata({
       type: 'article',
       publishedTime: post.published_at || post.created_at,
       modifiedTime: post.updated_at || post.published_at || post.created_at,
-      images: [{ url: ogImageUrl, width: 1200, height: 630, alt: title }],
+      images: [ogImage],
     },
     twitter: {
       card: 'summary_large_image',

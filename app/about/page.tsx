@@ -1,7 +1,7 @@
 import { Shield, Zap, Globe, Search, BookOpen, AlertTriangle, CheckCircle2, Anchor, Ship, Wrench, ArrowRight, Package, Recycle, UserPlus, Upload, MessageSquare, ShieldCheck, FileText, Store } from 'lucide-react'
 import Link from 'next/link'
 import type { Metadata } from 'next'
-import { BRAND, absoluteUrl } from '@/lib/brand'
+import { BRAND, ORG, absoluteUrl } from '@/lib/brand'
 
 export const metadata: Metadata = {
   title: 'About MarineYard – Global Marketplace for Ship Parts',
@@ -26,6 +26,12 @@ const schemaData = {
       url: BRAND.url,
       description: BRAND.description,
       email: BRAND.supportEmail,
+      foundingDate: ORG.founded || undefined,
+      parentOrganization: ORG.operator ? { '@type': 'Organization', name: ORG.operator } : undefined,
+      founder: ORG.runBy ? { '@type': 'Person', name: ORG.runBy } : undefined,
+      address: ORG.address || ORG.country
+        ? { '@type': 'PostalAddress', streetAddress: ORG.address || undefined, addressCountry: ORG.country || undefined }
+        : undefined,
       areaServed: 'Worldwide',
       knowsAbout: [
         'Ship Spare Parts',
@@ -228,6 +234,26 @@ export default function AboutPage() {
             <p className="leading-relaxed mb-4" style={{ color: 'var(--text-muted)' }}>
               MarineYard is built and run by the MarineYard team, who look after the marketplace, listing moderation and our Resources section. Resources articles are published under the MarineYard Editorial Team byline and link the sources they rely on.
             </p>
+            <dl className="grid sm:grid-cols-2 gap-x-8 gap-y-3 mb-6 p-5 rounded-xl text-sm" style={{ background: 'var(--accent-bg)', border: '1px solid var(--border)' }}>
+              {[
+                ['Brand', BRAND.name],
+                ['Operated by', ORG.operator],
+                ['Run by', ORG.runBy],
+                ['Based in', [ORG.address, ORG.country].filter(Boolean).join(', ')],
+                ['Founded', ORG.founded],
+                ['Contact', BRAND.supportEmail],
+                ['Website', BRAND.domain],
+              ]
+                .filter(([, v]) => v)
+                .map(([k, v]) => (
+                  <div key={k} className="flex gap-3">
+                    <dt className="w-28 flex-shrink-0 font-semibold" style={{ color: 'var(--text-primary)' }}>{k}</dt>
+                    <dd style={{ color: 'var(--text-muted)' }}>
+                      {k === 'Contact' ? <a href={`mailto:${v}`} className="underline" style={{ color: 'var(--accent)' }}>{v}</a> : v}
+                    </dd>
+                  </div>
+                ))}
+            </dl>
             <p className="leading-relaxed" style={{ color: 'var(--text-muted)' }}>
               MarineYard is a listing venue, not a seller: we don&apos;t take part in sales, hold payments or inspect the parts listed here. Our{' '}
               <Link href="/editorial-policy" className="underline" style={{ color: 'var(--accent)' }}>editorial policy</Link>

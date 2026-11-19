@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Anchor, Check, X, Star, Trash2, EyeOff, Loader2, Search, ExternalLink } from 'lucide-react'
+import { Anchor, Check, X, Star, Trash2, EyeOff, Loader2, Search, ExternalLink, Lock, Unlock, FileText } from 'lucide-react'
 import { useTheme } from '@/components/providers/ThemeProvider'
 import { useModal } from '@/components/admin/AdminModal'
-import { CATEGORY_BY_SLUG, LISTING_STATUS_LABEL, formatPrice } from '@/lib/listings-meta'
+import { CATEGORY_BY_SLUG, LISTING_CATEGORIES, LISTING_STATUS_LABEL, formatPrice } from '@/lib/listings-meta'
+import { CATEGORY_INTROS } from '@/lib/category-intros'
 
 const TABS = [
   { key: '', label: 'All' },
@@ -23,7 +24,10 @@ export default function AdminListingsPage() {
   const [status, setStatus] = useState('')
   const [q, setQ] = useState('')
   const [query, setQuery] = useState('')
-  const [data, setData] = useState<{ listings: any[]; total: number; counts: Record<string, number>; autoApprove: boolean } | null>(null)
+  const [data, setData] = useState<{ listings: any[]; total: number; counts: Record<string, number>; autoApprove: boolean; categoryIntros?: Record<string, string> } | null>(null)
+  const [introSlug, setIntroSlug] = useState(LISTING_CATEGORIES[0].slug)
+  const [introText, setIntroText] = useState('')
+  const [introSaved, setIntroSaved] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState('')
 
@@ -44,6 +48,24 @@ export default function AdminListingsPage() {
   useEffect(() => {
     load()
   }, [load])
+
+  // Category page intro editor: show the saved override, or the built-in default.
+  useEffect(() => {
+    if (!data) return
+    setIntroText(data.categoryIntros?.[introSlug] || CATEGORY_INTROS[introSlug]?.intro || '')
+    setIntroSaved('')
+  }, [introSlug, data])
+
+  const saveIntro = async () => {
+    setIntroSaved('Saving…')
+    const res = await fetch('/api/admin/listings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categoryIntro: { slug: introSlug, text: introText } }),
+    })
+    setIntroSaved(res.ok ? 'Saved — live on the category page' : 'Save failed')
+    if (res.ok) load()
+  }
 
   const patch = async (body: any) => {
     setBusy(body.id || 'setting')
@@ -144,6 +166,8 @@ export default function AdminListingsPage() {
                     {LISTING_STATUS_LABEL[l.status] || l.status}
                   </span>
                   {l.is_featured && <span className="px-2 py-0.5 rounded-full font-semibold bg-amber-400/20 text-amber-600">Featured</span>}
+                  {l.contact_tier === 'paid' && <span className="px-2 py-0.5 rounded-full font-semibold bg-slate-900 text-amber-400">Paid lead</span>}
+                  {l.is_public_offer && <span className="px-2 py-0.5 rounded-full font-semibold bg-sky-500/15 text-sky-600">Public offer</span>}
                   <span className={muted}>{CATEGORY_BY_SLUG[l.category]?.name}</span>
                 </div>
                 <p className={`font-semibold truncate ${text}`}>{l.title}</p>
@@ -157,6 +181,7 @@ export default function AdminListingsPage() {
                 {l.status !== 'active' && <button onClick={() => patch({ id: l.id, status: 'active' })} className="p-2 rounded-lg bg-green-600 text-white" title="Approve / publish"><Check className="w-4 h-4" /></button>}
                 {l.status !== 'rejected' && <button onClick={() => reject(l.id)} className={`p-2 rounded-lg border ${card} text-red-500`} title="Reject"><X className="w-4 h-4" /></button>}
                 {l.status === 'active' && <button onClick={() => patch({ id: l.id, status: 'hidden' })} className={`p-2 rounded-lg border ${card} ${muted}`} title="Hide"><EyeOff className="w-4 h-4" /></button>}
+                <button onClick={() => patch({ id: l.id, contact_tier: l.contact_tier === 'paid' ? 'members' : 'paid' })} className={`p-2 rounded-lg border ${card} ${l.contact_tier === 'paid' ? 'text-amber-500' : muted}`} title={l.contact_tier === 'paid' ? 'Paid lead — make contact free for members' : 'Make this a paid lead (contact for paid plans only)'}>{l.contact_tier === 'paid' ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}</button>
                 <button onClick={() => patch({ id: l.id, is_featured: !l.is_featured })} className={`p-2 rounded-lg border ${card} ${l.is_featured ? 'text-amber-500' : muted}`} title={l.is_featured ? 'Remove featured' : 'Feature'}><Star className="w-4 h-4" fill={l.is_featured ? 'currentColor' : 'none'} /></button>
                 <button onClick={() => remove(l.id, l.title)} className={`p-2 rounded-lg border ${card} text-red-500`} title="Delete"><Trash2 className="w-4 h-4" /></button>
               </div>
@@ -164,6 +189,34 @@ export default function AdminListingsPage() {
           ))}
           <p className={`text-xs pt-2 ${muted}`}>{data.total} listing{data.total === 1 ? '' : 's'}</p>
         </div>
+      )}
+
+      {data && (
+        <section className={`mt-10 rounded-2xl border p-5 ${card}`}>
+          <div className="flex items-center gap-2 mb-1">
+            <FileText className="w-5 h-5 text-sky-500" />
+            <h2 className={`font-bold ${text}`}>Category page intro text</h2>
+          </div>
+          <p className={`text-sm mb-4 ${muted}`}>
+            Shown under the H1 on /listings/&lt;category&gt;. Aim for about 150 words; separate paragraphs with a blank line. Leave empty to use the built-in text.
+          </p>
+          <div className="flex flex-wrap items-center gap-3 mb-3">
+            <select value={introSlug} onChange={(e) => setIntroSlug(e.target.value)} className={`px-3 py-2 rounded-lg text-sm border ${card} ${text}`}>
+              {LISTING_CATEGORIES.map((c) => (
+                <option key={c.slug} value={c.slug}>{c.name}{data.categoryIntros?.[c.slug] ? ' (edited)' : ''}</option>
+              ))}
+            </select>
+            <Link href={`/listings/${introSlug}`} target="_blank" className="text-sm text-sky-500 hover:underline inline-flex items-center gap-1">
+              /listings/{introSlug} <ExternalLink className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+          <textarea value={introText} onChange={(e) => setIntroText(e.target.value)} rows={8} className={`w-full px-3 py-2 rounded-lg text-sm border ${card} ${text}`} />
+          <div className="flex items-center gap-3 mt-3">
+            <button onClick={saveIntro} className="px-4 py-2 rounded-lg text-sm font-semibold bg-sky-600 text-white hover:bg-sky-700">Save intro</button>
+            <span className={`text-xs ${muted}`}>{introText.trim() ? introText.trim().split(/s+/).length : 0} words</span>
+            {introSaved && <span className="text-xs text-sky-500">{introSaved}</span>}
+          </div>
+        </section>
       )}
     </div>
   )

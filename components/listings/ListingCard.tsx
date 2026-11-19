@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { MapPin, Star, Crown } from 'lucide-react'
+import { MapPin, Star, Crown, Lock } from 'lucide-react'
 import CategoryIcon from './CategoryIcon'
 import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice, timeAgo, type PublicListing } from '@/lib/listings-meta'
 
@@ -43,6 +43,11 @@ export default function ListingCard({ listing, compact = false }: { listing: Pub
               <Star className="w-3 h-3" /> Featured
             </span>
           ) : null}
+          {listing.contact_tier === 'paid' && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: '#0a1f33', color: '#fbbf24' }}>
+              <Lock className="w-3 h-3" /> Paid lead
+            </span>
+          )}
           {listing.status === 'sold' && (
             <span className="px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide" style={{ background: '#0a1f33', color: '#fff' }}>
               Sold

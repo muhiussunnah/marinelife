@@ -8,9 +8,9 @@ import type { SocialLink, PaymentMethod, FooterBadge } from "@/lib/site-content"
 // =============================================================================
 const FALLBACK_EXPLORE: { href: string; label: string; target: "_self" | "_blank" }[] = [
   { href: "/listings", label: "Ship Parts Marketplace", target: "_self" },
-  { href: "/listings?category=main-engine", label: "Main Engine Parts", target: "_self" },
-  { href: "/listings?category=turbochargers", label: "Turbochargers", target: "_self" },
-  { href: "/listings?category=navigation-communication", label: "Navigation Equipment", target: "_self" },
+  { href: "/listings/main-engine", label: "Main Engine Parts", target: "_self" },
+  { href: "/listings/turbochargers", label: "Turbochargers", target: "_self" },
+  { href: "/listings/navigation-communication", label: "Navigation Equipment", target: "_self" },
   { href: "/dashboard/listings/new", label: "Sell Ship Parts", target: "_self" },
   { href: "/resources", label: "Marine Resources", target: "_self" },
 ];

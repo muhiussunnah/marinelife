@@ -590,6 +590,15 @@ CREATE TABLE IF NOT EXISTS "listings" (
   "updated_at"       timestamptz NOT NULL DEFAULT now(),
   "published_at"     timestamptz
 );
+-- contact_tier: 'members' = any signed-in member sees the seller's contact
+-- details; 'paid' = only members on a paid plan (Starter/Explorer/Pro).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS contact_tier text NOT NULL DEFAULT 'members';
+-- Optional SEO overrides (fall back to title / description when empty).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS meta_title text;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS meta_description text;
+-- A public offer the seller published elsewhere and that MarineYard lists on
+-- their behalf: buyers contact the seller directly (no MarineYard inbox).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_public_offer boolean NOT NULL DEFAULT false;
 CREATE UNIQUE INDEX IF NOT EXISTS listings_slug_key ON listings (slug);
 CREATE INDEX IF NOT EXISTS idx_listings_public ON listings (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_listings_user ON listings (user_id, created_at DESC);

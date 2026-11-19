@@ -142,7 +142,7 @@ export default async function HomePage() {
               {popular.map((slug) => {
                 const c = LISTING_CATEGORIES.find((x) => x.slug === slug)!
                 return (
-                  <Link key={slug} href={`/listings?category=${slug}`} className="px-2.5 py-1 rounded-full hover:opacity-80" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
+                  <Link key={slug} href={`/listings/${slug}`} className="px-2.5 py-1 rounded-full hover:opacity-80" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
                     {c.name}
                   </Link>
                 )
@@ -191,7 +191,7 @@ export default async function HomePage() {
             {LISTING_CATEGORIES.map((c) => (
               <Link
                 key={c.slug}
-                href={`/listings?category=${c.slug}`}
+                href={`/listings/${c.slug}`}
                 className="group p-4 sm:p-5 rounded-2xl card-lift"
                 style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
               >

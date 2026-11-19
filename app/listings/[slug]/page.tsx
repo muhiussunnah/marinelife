@@ -3,14 +3,16 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import {
   MapPin, Eye, Calendar, Tag, Package, Factory, Hash, Boxes, ShieldAlert, Mail, Phone, MessageCircle,
-  Lock, ChevronRight, Crown, Star, User,
+  Lock, ChevronRight, Crown, Star, User, Globe2, Info,
 } from 'lucide-react'
 import ListingGallery from '@/components/listings/ListingGallery'
 import ListingCard from '@/components/listings/ListingCard'
 import InquiryForm from '@/components/listings/InquiryForm'
 import CategoryIcon from '@/components/listings/CategoryIcon'
-import { getListingBySlug, getRelatedListings, incrementListingViews } from '@/lib/listings'
-import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice } from '@/lib/listings-meta'
+import ListingsBrowser, { hasListingFilters, type SP } from '@/components/listings/ListingsBrowser'
+import { getListingBySlug, getRelatedListings, incrementListingViews, userHasPaidPlan, getCategoryIntroOverrides } from '@/lib/listings'
+import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice, categoryPath, isPaidLead } from '@/lib/listings-meta'
+import { CATEGORY_INTROS } from '@/lib/category-intros'
 import { getSessionUser } from '@/lib/session'
 import { isAdminEmail } from '@/lib/admin'
 import { BRAND } from '@/lib/brand'
@@ -19,17 +21,52 @@ export const dynamic = 'force-dynamic'
 
 const abs = (u: string) => (u.startsWith('http') ? u : `${BRAND.url}${u}`)
 
-export async function generateMetadata({ params }: { params: { slug: string } }): Promise<Metadata> {
+/* ── /listings/<category> ─────────────────────────────────────────── */
+
+async function categoryHeading(slug: string) {
+  const cat = CATEGORY_BY_SLUG[slug]
+  const copy = CATEGORY_INTROS[slug]
+  const overrides = await getCategoryIntroOverrides()
+  return {
+    h1: copy?.h1 || cat.name,
+    intro: overrides[slug] || copy?.intro || `${cat.blurb}.`,
+    metaTitle: copy?.metaTitle || `${cat.name} for Sale | MarineYard`,
+    metaDescription:
+      copy?.metaDescription || `Buy and sell ${cat.name.toLowerCase()} worldwide: ${cat.blurb.toLowerCase()}. Contact sellers directly on MarineYard.`,
+  }
+}
+
+/* ── metadata ─────────────────────────────────────────────────────── */
+
+export async function generateMetadata({ params, searchParams }: { params: { slug: string }; searchParams: SP }): Promise<Metadata> {
+  const cat = CATEGORY_BY_SLUG[params.slug]
+  if (cat) {
+    const h = await categoryHeading(cat.slug)
+    const url = `${BRAND.url}${categoryPath(cat.slug)}`
+    return {
+      title: h.metaTitle,
+      description: h.metaDescription,
+      alternates: { canonical: url },
+      robots: hasListingFilters(searchParams) ? { index: false, follow: true } : undefined,
+      openGraph: { title: h.metaTitle, description: h.metaDescription, url, type: 'website' },
+      twitter: { card: 'summary_large_image', title: h.metaTitle, description: h.metaDescription },
+    }
+  }
+
   const l = await getListingBySlug(params.slug)
   if (!l || !['active', 'sold'].includes(l.status)) return { title: 'Listing not found | MarineYard', robots: { index: false } }
-  const title = `${l.title}${l.brand && !l.title.toLowerCase().includes(l.brand.toLowerCase()) ? ` – ${l.brand}` : ''} | MarineYard`
-  const description = `${CONDITION_LABEL[l.condition] || ''} ${l.title} in ${[l.city, l.country].filter(Boolean).join(', ')}. ${formatPrice(l)}. ${l.description}`
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 158)
+  const title =
+    l.meta_title?.trim() ||
+    `${l.title}${l.brand && !l.title.toLowerCase().includes(l.brand.toLowerCase()) ? ` – ${l.brand}` : ''} | MarineYard`
+  const description =
+    l.meta_description?.trim() ||
+    `${CONDITION_LABEL[l.condition] || ''} ${l.title} in ${[l.city, l.country].filter(Boolean).join(', ')}. ${formatPrice(l)}. ${l.description}`
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 158)
   const url = `${BRAND.url}/listings/${l.slug}`
   return {
-    title,
+    title: { absolute: title },
     description,
     alternates: { canonical: url },
     robots: l.status === 'sold' ? { index: false, follow: true } : undefined,
@@ -38,13 +75,35 @@ export async function generateMetadata({ params }: { params: { slug: string } })
       description,
       url,
       type: 'website',
-      images: l.images?.[0] ? [{ url: abs(l.images[0]) }] : [{ url: `${BRAND.url}/logo-512.png` }],
+      images: l.images?.[0] ? [{ url: abs(l.images[0]) }] : [{ url: `${BRAND.url}${BRAND.ogImage}` }],
     },
     twitter: { card: 'summary_large_image', title, description },
   }
 }
 
-export default async function ListingPage({ params }: { params: { slug: string } }) {
+/* ── page ─────────────────────────────────────────────────────────── */
+
+export default async function ListingPage({ params, searchParams }: { params: { slug: string }; searchParams: SP }) {
+  const cat0 = CATEGORY_BY_SLUG[params.slug]
+  if (cat0) {
+    const h = await categoryHeading(cat0.slug)
+    const crumbs = {
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Home', item: `${BRAND.url}/` },
+        { '@type': 'ListItem', position: 2, name: 'Listings', item: `${BRAND.url}/listings` },
+        { '@type': 'ListItem', position: 3, name: cat0.name, item: `${BRAND.url}${categoryPath(cat0.slug)}` },
+      ],
+    }
+    return (
+      <>
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(crumbs) }} />
+        <ListingsBrowser searchParams={searchParams} category={cat0.slug} heading={{ h1: h.h1, intro: h.intro }} />
+      </>
+    )
+  }
+
   const [listing, viewer] = await Promise.all([getListingBySlug(params.slug), getSessionUser()])
   if (!listing) notFound()
   const isOwner = !!viewer && viewer.id === listing.user_id
@@ -52,6 +111,11 @@ export default async function ListingPage({ params }: { params: { slug: string }
   const isPublic = ['active', 'sold'].includes(listing.status)
   if (!isPublic && !isOwner && !isAdmin) notFound()
   if (!isOwner && listing.status === 'active') await incrementListingViews(listing.id)
+
+  const paidLead = isPaidLead(listing)
+  const viewerPaid = paidLead && viewer && !isOwner && !isAdmin ? await userHasPaidPlan(viewer.id) : false
+  // Who may see the seller's email / phone / WhatsApp.
+  const canSeeContact = !!viewer && (isOwner || isAdmin || !paidLead || viewerPaid)
 
   const related = await getRelatedListings(listing, 4)
   const cat = CATEGORY_BY_SLUG[listing.category]
@@ -74,19 +138,25 @@ export default async function ListingPage({ params }: { params: { slug: string }
       ? 'https://schema.org/NewCondition'
       : listing.condition === 'reconditioned'
         ? 'https://schema.org/RefurbishedCondition'
-        : 'https://schema.org/UsedCondition'
+        : listing.condition === 'on-request'
+          ? undefined
+          : 'https://schema.org/UsedCondition'
+  // The seller's company name is part of what a paid lead unlocks, so it is
+  // only published in the markup for ordinary listings.
+  const sellerName = !paidLead ? listing.contact_name || listing.seller_name || undefined : undefined
   const jsonLd = {
     '@context': 'https://schema.org',
     '@graph': [
       {
         '@type': 'Product',
         name: listing.title,
-        description: listing.description.slice(0, 5000),
+        description: (listing.meta_description || listing.description).slice(0, 5000),
         sku: listing.part_number || undefined,
         mpn: listing.part_number || undefined,
         brand: listing.brand ? { '@type': 'Brand', name: listing.brand } : undefined,
         category: cat?.name,
-        image: listing.images.length ? listing.images.map(abs) : undefined,
+        image: listing.images.length ? listing.images.map(abs) : [`${BRAND.url}${BRAND.ogImage}`],
+        url: `${BRAND.url}/listings/${listing.slug}`,
         ...(listing.price != null && !listing.price_on_request
           ? {
               offers: {
@@ -97,6 +167,7 @@ export default async function ListingPage({ params }: { params: { slug: string }
                 itemCondition,
                 url: `${BRAND.url}/listings/${listing.slug}`,
                 areaServed: listing.country,
+                seller: sellerName ? { '@type': 'Organization', name: sellerName } : undefined,
               },
             }
           : {}),
@@ -106,7 +177,7 @@ export default async function ListingPage({ params }: { params: { slug: string }
         itemListElement: [
           { '@type': 'ListItem', position: 1, name: 'Home', item: `${BRAND.url}/` },
           { '@type': 'ListItem', position: 2, name: 'Listings', item: `${BRAND.url}/listings` },
-          ...(cat ? [{ '@type': 'ListItem', position: 3, name: cat.name, item: `${BRAND.url}/listings?category=${cat.slug}` }] : []),
+          ...(cat ? [{ '@type': 'ListItem', position: 3, name: cat.name, item: `${BRAND.url}${categoryPath(cat.slug)}` }] : []),
           { '@type': 'ListItem', position: cat ? 4 : 3, name: listing.title, item: `${BRAND.url}/listings/${listing.slug}` },
         ],
       },
@@ -128,7 +199,7 @@ export default async function ListingPage({ params }: { params: { slug: string }
           {cat && (
             <>
               <ChevronRight className="w-3 h-3" />
-              <Link href={`/listings?category=${cat.slug}`} className="hover:underline">{cat.name}</Link>
+              <Link href={categoryPath(cat.slug)} className="hover:underline">{cat.name}</Link>
             </>
           )}
         </nav>
@@ -173,6 +244,9 @@ export default async function ListingPage({ params }: { params: { slug: string }
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
                   <CategoryIcon slug={listing.category} className="w-3.5 h-3.5" /> {cat?.name}
                 </span>
+                {paidLead && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: '#0a1f33', color: '#fbbf24' }}><Lock className="w-3 h-3" /> Paid lead</span>
+                )}
                 {listing.priority >= 2 ? (
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold" style={{ background: '#f59e0b', color: '#1f1300' }}><Crown className="w-3 h-3" /> Top seller</span>
                 ) : listing.priority >= 1 ? (
@@ -195,20 +269,20 @@ export default async function ListingPage({ params }: { params: { slug: string }
               <h2 className="font-semibold mb-4 flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
                 <User className="w-4 h-4" style={{ color: 'var(--accent)' }} /> Contact the seller
               </h2>
-              {isOwner ? (
+              {isOwner && !isAdmin ? (
                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
                   This is your listing. Buyer messages arrive in your <Link href="/dashboard/inquiries" className="underline font-semibold" style={{ color: 'var(--accent)' }}>Inquiries</Link>.
                 </p>
-              ) : listing.status !== 'active' ? (
+              ) : listing.status !== 'active' && !isAdmin ? (
                 <p className="text-sm" style={{ color: 'var(--text-muted)' }}>This item is no longer available.</p>
-              ) : viewer ? (
+              ) : canSeeContact ? (
                 <div className="space-y-4">
                   <ul className="space-y-2 text-sm">
                     {listing.contact_name && <li className="flex items-center gap-2" style={{ color: 'var(--text-primary)' }}><User className="w-4 h-4" style={{ color: 'var(--text-faint)' }} /> {listing.contact_name}</li>}
                     {listing.contact_email && (
                       <li className="flex items-center gap-2 min-w-0">
                         <Mail className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-faint)' }} />
-                        <a href={`mailto:${listing.contact_email}?subject=${encodeURIComponent(`MarineYard: ${listing.title}`)}`} className="underline truncate" style={{ color: 'var(--accent)' }}>{listing.contact_email}</a>
+                        <a href={`mailto:${listing.contact_email}?subject=${encodeURIComponent(`Enquiry: ${listing.title}`)}`} className="underline truncate" style={{ color: 'var(--accent)' }}>{listing.contact_email}</a>
                       </li>
                     )}
                     {listing.contact_phone && (
@@ -218,13 +292,33 @@ export default async function ListingPage({ params }: { params: { slug: string }
                       <li className="flex items-center gap-2"><MessageCircle className="w-4 h-4" style={{ color: 'var(--text-faint)' }} /><a href={`https://wa.me/${listing.whatsapp.replace(/[^0-9]/g, '')}`} target="_blank" rel="noopener noreferrer nofollow" style={{ color: 'var(--accent)' }}>WhatsApp {listing.whatsapp}</a></li>
                     )}
                   </ul>
-                  <InquiryForm listingId={listing.id} listingTitle={listing.title} />
+                  {listing.is_public_offer ? (
+                    <p className="text-xs leading-relaxed flex items-start gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                      <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                      Contact this seller directly by email, phone or WhatsApp — mention MarineYard and the part number.
+                    </p>
+                  ) : (
+                    !isOwner && <InquiryForm listingId={listing.id} listingTitle={listing.title} />
+                  )}
+                </div>
+              ) : viewer && paidLead ? (
+                <div className="text-center py-2">
+                  <Lock className="w-8 h-8 mx-auto mb-3" style={{ color: '#f59e0b' }} />
+                  <p className="font-semibold text-sm mb-1" style={{ color: 'var(--text-primary)' }}>Paid lead</p>
+                  <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+                    The seller&apos;s email, phone and WhatsApp for this offer are available on the Starter, Explorer and Pro plans — try any plan free for 7 days.
+                  </p>
+                  <Link href="/pricing" className="inline-flex items-center justify-center w-full px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: 'linear-gradient(135deg,#0a5c9e,#0891b2)' }}>
+                    See plans &amp; unlock
+                  </Link>
                 </div>
               ) : (
                 <div className="text-center py-2">
                   <Lock className="w-8 h-8 mx-auto mb-3" style={{ color: 'var(--accent)' }} />
                   <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
-                    Sign in (free) to see the seller&apos;s email, phone and WhatsApp, or send a message.
+                    {paidLead
+                      ? 'This is a paid lead: sign in and choose a plan to see the seller’s email, phone and WhatsApp.'
+                      : 'Sign in (free) to see the seller’s email, phone and WhatsApp, or send a message.'}
                   </p>
                   <div className="flex gap-2">
                     <Link href={`/login?next=${encodeURIComponent(nextPath)}`} className="flex-1 px-4 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: 'var(--btn-primary)' }}>Sign in</Link>
@@ -233,6 +327,18 @@ export default async function ListingPage({ params }: { params: { slug: string }
                 </div>
               )}
             </div>
+
+            {listing.is_public_offer && (
+              <div className="rounded-3xl p-5 text-xs leading-relaxed" style={{ background: 'var(--accent-bg)', border: '1px solid var(--border-hover)', color: 'var(--text-muted)' }}>
+                <p className="font-semibold mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}><Globe2 className="w-4 h-4" style={{ color: 'var(--accent)' }} /> Public offer</p>
+                The seller published this offer publicly and MarineYard lists it so buyers can find it. Confirm availability with the seller.
+                Is this your company?{' '}
+                <Link href={`/contact?subject=${encodeURIComponent(`Claim or remove listing: ${listing.slug}`)}`} className="underline font-semibold" style={{ color: 'var(--accent)' }}>
+                  Claim or remove it
+                </Link>
+                .
+              </div>
+            )}
 
             <div className="rounded-3xl p-5 text-xs leading-relaxed" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', color: 'var(--text-muted)' }}>
               <p className="font-semibold mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--text-primary)' }}><ShieldAlert className="w-4 h-4 text-amber-500" /> Trade safely</p>
@@ -247,7 +353,7 @@ export default async function ListingPage({ params }: { params: { slug: string }
           <section className="mt-16">
             <div className="flex items-end justify-between mb-5">
               <h2 className="font-playfair text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>More {cat?.name.toLowerCase() || 'listings'}</h2>
-              <Link href={`/listings?category=${listing.category}`} className="text-sm font-semibold" style={{ color: 'var(--accent)' }}>View all →</Link>
+              <Link href={cat ? categoryPath(cat.slug) : '/listings'} className="text-sm font-semibold" style={{ color: 'var(--accent)' }}>View all →</Link>
             </div>
             <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
               {related.map((r) => <ListingCard key={r.id} listing={r} compact />)}

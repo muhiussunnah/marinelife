@@ -20,7 +20,8 @@ export const PRIORITY_SQL = `GREATEST(
 
 const PUBLIC_COLUMNS = `l.id, l.slug, l.title, l.category, l.brand, l.model, l.part_number, l.condition,
   l.price, l.currency, l.price_on_request, l.quantity, l.country, l.city, l.description, l.images,
-  l.status, l.views, l.created_at, l.published_at, ${PRIORITY_SQL} AS priority, p.full_name AS seller_name`
+  l.status, l.views, l.created_at, l.published_at, l.contact_tier, l.is_public_offer, l.meta_title, l.meta_description,
+  ${PRIORITY_SQL} AS priority, p.full_name AS seller_name`
 
 export type ListingSort = 'featured' | 'newest' | 'price-asc' | 'price-desc'
 
@@ -138,8 +139,30 @@ export async function getListingCountries(): Promise<string[]> {
   return rows.map((r) => r.country)
 }
 
-export async function getListingSitemapEntries(): Promise<{ slug: string; updated_at: string }[]> {
-  return query(`SELECT slug, updated_at FROM listings WHERE status IN ('active','sold') ORDER BY updated_at DESC LIMIT 45000`)
+export async function getListingSitemapEntries(): Promise<{ slug: string; updated_at: string; images: string[] }[]> {
+  return query(
+    `SELECT slug, updated_at, images FROM listings WHERE status IN ('active','sold') ORDER BY updated_at DESC LIMIT 45000`
+  )
+}
+
+/** True when the user is on a paid plan that is active, trialing or still inside a paid period. */
+export async function userHasPaidPlan(userId: string | null | undefined): Promise<boolean> {
+  if (!userId) return false
+  const rows = await query<{ paid: boolean }>(
+    `SELECT (p.plan IN ('starter','explorer','pro') AND ${PAID_ACTIVE}) AS paid FROM profiles p WHERE p.id = $1`,
+    [userId]
+  )
+  return !!rows[0]?.paid
+}
+
+/** Admin-edited category intro texts (site_settings key "listing_category_intro:<slug>"). */
+export async function getCategoryIntroOverrides(): Promise<Record<string, string>> {
+  const rows = await query<{ key: string; value: string }>(
+    `SELECT key, value FROM site_settings WHERE key LIKE 'listing_category_intro:%'`
+  )
+  return Object.fromEntries(
+    rows.filter((r) => (r.value || '').trim()).map((r) => [r.key.slice('listing_category_intro:'.length), r.value])
+  )
 }
 
 export async function incrementListingViews(id: string) {
