@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { ImagePlus, Loader2, X, ArrowLeft, ArrowRight, Info, Gem } from 'lucide-react'
 import { COUNTRIES } from '@/lib/countries'
 import {
-  CURRENCIES, LISTING_CATEGORIES, LISTING_CONDITIONS, LISTING_CREDIT_COST, MAX_IMAGE_BYTES, MAX_LISTING_IMAGES, POPULAR_BRANDS,
+  CURRENCIES, LISTING_CATEGORIES, LISTING_CONDITIONS, LISTING_CREDIT_COST, MAX_IMAGE_BYTES, MAX_LISTING_IMAGES, POPULAR_BRANDS, isSpecImage,
 } from '@/lib/listings-meta'
 
 export interface ListingFormValues {
@@ -46,7 +46,8 @@ export default function ListingForm({
   credits?: number | null
 }) {
   const router = useRouter()
-  const [v, setV] = useState<ListingFormValues>(initial)
+  // The spec sheet is made by the server on every save, so it isn't one of the seller's photos here.
+  const [v, setV] = useState<ListingFormValues>({ ...initial, images: initial.images.filter((u) => !isSpecImage(u)) })
   const [uploading, setUploading] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -217,6 +218,9 @@ export default function ListingForm({
           )}
         </div>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={(e) => onFiles(e.target.files)} />
+        <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
+          When you save, MarineYard places each photo on its branded frame with the item name, and adds a spec sheet image made from the details below.
+        </p>
       </div>
 
       <div className={section} style={sectionStyle}>

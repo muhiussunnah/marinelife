@@ -7,6 +7,9 @@ export const FREE_LISTINGS = 9
 export const MAX_LISTING_IMAGES = 8
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 
+/** Branded spec-sheet images are stored as "...-spec-<hex>.webp" (see lib/listing-images-store.ts). */
+export const isSpecImage = (url: string) => /-spec-[0-9a-f]+\.webp$/.test(String(url || ''))
+
 export type CategoryIcon =
   | 'Cog' | 'Zap' | 'Fan' | 'Droplets' | 'Gauge' | 'Flame' | 'Anchor' | 'Radar'
   | 'CircuitBoard' | 'ShipWheel' | 'Wrench' | 'LifeBuoy' | 'Snowflake' | 'Hammer' | 'Package'

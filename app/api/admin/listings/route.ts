@@ -6,6 +6,7 @@ import { isAdminEmail } from '@/lib/admin'
 import { CATEGORY_BY_SLUG } from '@/lib/listings-meta'
 import { validateListing } from '@/lib/listings-validate'
 import { makeListingSlug } from '@/lib/listings'
+import { prepareListingImages } from '@/lib/listing-images-store'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -98,6 +99,13 @@ export async function POST(req: NextRequest) {
       metaDescription,
     ]
   )
+  // Same branded photos + spec sheet as member listings (an empty photo list still gets the spec sheet).
+  try {
+    const images = await prepareListingImages({ userId: admin.id, images: value.images, next: value })
+    await pool.query(`UPDATE listings SET images = $2 WHERE id = $1`, [rows[0].id, images])
+  } catch (e: any) {
+    console.error('[admin listings] image branding failed:', e?.message || e)
+  }
   revalidatePath('/listings')
   revalidatePath(`/listings/${value.category}`)
   revalidatePath('/')
