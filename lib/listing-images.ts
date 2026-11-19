@@ -146,6 +146,7 @@ export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promi
 
   const fitted = await sharp(photo)
     .rotate()
+    .flatten({ background: '#ffffff' }) // transparent PNGs go on white, not black
     .resize({ width: boxW, height: boxH, fit: 'inside', kernel: 'lanczos3', withoutEnlargement: false })
     .sharpen({ sigma: 0.7 })
     .jpeg({ quality: 92 })
