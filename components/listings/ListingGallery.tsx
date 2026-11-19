@@ -12,8 +12,13 @@ import CategoryIcon from './CategoryIcon'
 export default function ListingGallery({ images, title, category }: { images: string[]; title: string; category: string }) {
   const [i, setI] = useState(0)
   const [zoom, setZoom] = useState<{ x: number; y: number } | null>(null)
+  const [scale, setScale] = useState(2.5)
   const frame = useRef<HTMLDivElement>(null)
   const n = images.length
+  // Branded spec sheets are stored as "...-spec-<id>.webp"; everything else is a photo.
+  const isSpec = (src: string) => /-spec-[0-9a-f]+\.webp$/.test(src)
+  const altFor = (src: string, k: number) =>
+    isSpec(src) ? `${title} – specification sheet` : `${title} – photo ${k + 1}${n > 1 ? ` of ${n}` : ''}`
 
   if (!n) {
     return (
@@ -57,14 +62,20 @@ export default function ListingGallery({ images, title, category }: { images: st
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={images[i]}
-          alt={`${title} — photo ${i + 1} of ${n}`}
+          alt={altFor(images[i], i)}
           className="absolute inset-0 w-full h-full object-contain transition-transform duration-150 ease-out"
           style={
             zoom
-              ? { transform: 'scale(2.5)', transformOrigin: `${zoom.x}% ${zoom.y}%` }
+              ? { transform: `scale(${scale})`, transformOrigin: `${zoom.x}% ${zoom.y}%` }
               : { transform: 'scale(1)', transformOrigin: 'center' }
           }
           draggable={false}
+          onLoad={(e) => {
+            // Zoom further on sharp, large photos and less on small ones, so the zoomed view stays crisp.
+            const w = frame.current?.clientWidth || 800
+            const natural = e.currentTarget.naturalWidth || w
+            setScale(Math.min(2.5, Math.max(1.6, (natural / w) * 1.8)))
+          }}
           onClick={() => {
             // Touch screens have no hover: open the full-size photo instead.
             if (window.matchMedia('(hover: none)').matches) window.open(images[i], '_blank', 'noopener')
@@ -111,7 +122,7 @@ export default function ListingGallery({ images, title, category }: { images: st
               aria-current={k === i}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={src} alt="" className="w-full h-full object-cover" loading="lazy" />
+              <img src={src} alt="" className={`w-full h-full ${isSpec(src) ? 'object-cover object-left-top' : 'object-cover'}`} loading="lazy" />
             </button>
           ))}
         </div>

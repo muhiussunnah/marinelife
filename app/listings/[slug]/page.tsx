@@ -3,14 +3,16 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import {
   MapPin, Eye, Calendar, Tag, Package, Factory, Hash, Boxes, ShieldAlert, Mail, Phone, MessageCircle,
-  Lock, ChevronRight, Crown, Star, User, Globe2, Info,
+  Lock, ChevronRight, Crown, Star, User, Globe2, Info, BookOpen,
 } from 'lucide-react'
 import ListingGallery from '@/components/listings/ListingGallery'
 import ListingCard from '@/components/listings/ListingCard'
 import InquiryForm from '@/components/listings/InquiryForm'
+import ListingDescription from '@/components/listings/ListingDescription'
 import CategoryIcon from '@/components/listings/CategoryIcon'
 import ListingsBrowser, { hasListingFilters, type SP } from '@/components/listings/ListingsBrowser'
-import { getListingBySlug, getRelatedListings, incrementListingViews, userHasPaidPlan, getCategoryIntroOverrides } from '@/lib/listings'
+import { getListingBySlug, getRelatedListings, incrementListingViews, userHasPaidPlan, getCategoryIntroOverrides, getGuidesForCategory } from '@/lib/listings'
+import { uploadedImageSize } from '@/lib/image-size'
 import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice, categoryPath, isPaidLead } from '@/lib/listings-meta'
 import { CATEGORY_INTROS } from '@/lib/category-intros'
 import { getSessionUser } from '@/lib/session'
@@ -65,6 +67,8 @@ export async function generateMetadata({ params, searchParams }: { params: { slu
       .trim()
       .slice(0, 158)
   const url = `${BRAND.url}/listings/${l.slug}`
+  const ogSrc = l.images?.[0] ? abs(l.images[0]) : null
+  const ogSize = ogSrc ? await uploadedImageSize(ogSrc) : null
   return {
     title: { absolute: title },
     description,
@@ -75,7 +79,9 @@ export async function generateMetadata({ params, searchParams }: { params: { slu
       description,
       url,
       type: 'website',
-      images: l.images?.[0] ? [{ url: abs(l.images[0]) }] : [{ url: `${BRAND.url}${BRAND.ogImage}` }],
+      images: ogSrc
+        ? [{ url: ogSrc, ...(ogSize || {}), alt: l.title }]
+        : [{ url: `${BRAND.url}${BRAND.ogImage}`, width: 1200, height: 630, alt: 'MarineYard' }],
     },
     twitter: { card: 'summary_large_image', title, description },
   }
@@ -117,7 +123,7 @@ export default async function ListingPage({ params, searchParams }: { params: { 
   // Who may see the seller's email / phone / WhatsApp.
   const canSeeContact = !!viewer && (isOwner || isAdmin || !paidLead || viewerPaid)
 
-  const related = await getRelatedListings(listing, 4)
+  const [related, guides] = await Promise.all([getRelatedListings(listing, 4), getGuidesForCategory(listing.category, 3)])
   const cat = CATEGORY_BY_SLUG[listing.category]
   const location = [listing.city, listing.country].filter(Boolean).join(', ')
   const listedOn = new Date(listing.published_at || listing.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -185,6 +191,7 @@ export default async function ListingPage({ params, searchParams }: { params: { 
   }
 
   const card = { background: 'var(--bg-card)', border: '1px solid var(--border)' }
+  const itemName = [listing.brand && listing.brand !== 'Assorted' ? listing.brand : '', listing.model || ''].filter(Boolean).join(' ')
   const nextPath = `/listings/${listing.slug}`
 
   return (
@@ -230,11 +237,37 @@ export default async function ListingPage({ params, searchParams }: { params: { 
             </section>
 
             <section className="mt-6 rounded-3xl p-6 sm:p-8" style={card}>
-              <h2 className="font-playfair text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Description</h2>
-              <div className="text-[15px] leading-relaxed whitespace-pre-line break-words" style={{ color: 'var(--text-primary)' }}>
-                {listing.description}
-              </div>
+              <h2 className="font-playfair text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>
+                {itemName ? `About this ${itemName}` : 'About this item'}
+              </h2>
+              <ListingDescription text={listing.description} />
             </section>
+
+            {guides.length > 0 && (
+              <section className="mt-6 rounded-3xl p-6 sm:p-8" style={card}>
+                <h2 className="font-playfair text-xl font-bold mb-1" style={{ color: 'var(--text-primary)' }}>Buyer guides</h2>
+                <p className="text-sm mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Background reading from MarineYard Resources before you contact the seller.
+                </p>
+                <ul className="grid sm:grid-cols-3 gap-3">
+                  {guides.map((g) => (
+                    <li key={g.slug}>
+                      <Link
+                        href={`/${g.slug}`}
+                        className="flex h-full flex-col gap-1.5 rounded-2xl p-4 transition hover:-translate-y-0.5"
+                        style={{ background: 'var(--accent-bg)', border: '1px solid var(--border)' }}
+                      >
+                        <BookOpen className="w-4 h-4" style={{ color: 'var(--accent)' }} />
+                        <span className="text-sm font-semibold leading-snug" style={{ color: 'var(--text-primary)' }}>{g.title}</span>
+                        {g.excerpt && (
+                          <span className="text-xs leading-relaxed line-clamp-2" style={{ color: 'var(--text-muted)' }}>{g.excerpt}</span>
+                        )}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </div>
 
           {/* Right */}

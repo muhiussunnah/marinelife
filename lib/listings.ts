@@ -9,6 +9,7 @@
 import { randomBytes } from 'node:crypto'
 import { getPool, hasDatabase } from '@/lib/db/pool'
 import { CATEGORY_BY_SLUG, LISTING_CONDITIONS, type PublicListing } from '@/lib/listings-meta'
+import { BLOG_HIDDEN_SLUGS } from '@/lib/blog-hidden-slugs'
 
 const PAID_ACTIVE = `(p.subscription_status IN ('active','trialing','past_due') OR p.current_period_end > now())`
 
@@ -104,6 +105,38 @@ export async function getRelatedListings(listing: { id: string; category: string
       ORDER BY priority DESC, l.created_at DESC LIMIT ${Math.min(limit, 12)}`,
     [listing.category, listing.id]
   )
+}
+
+/** Resources articles that help a buyer of parts in each category (first match wins). */
+const CATEGORY_GUIDES: Record<string, string[]> = {
+  'main-engine': ['cylinder-liner', 'marine-turbocharger', 'impa-code'],
+  'auxiliary-engines': ['cylinder-liner', 'marine-turbocharger', 'impa-code'],
+  turbochargers: ['marine-turbocharger', 'cylinder-liner', 'impa-code'],
+  'pumps-compressors': ['oily-water-separator', 'impa-code', 'ship-chandler'],
+  separators: ['purifier-in-ship', 'oily-water-separator', 'impa-code'],
+  'boilers-heat-exchangers': ['ship-boiler', 'impa-code'],
+  'deck-machinery': ['windlass', 'impa-code'],
+  'propulsion-steering': ['stern-tube', 'impa-code'],
+}
+
+export type ListingGuide = { slug: string; title: string; excerpt: string | null }
+
+/** Up to `limit` published Resources guides for a listing's category, topped up with the newest articles. */
+export async function getGuidesForCategory(category: string, limit = 3): Promise<ListingGuide[]> {
+  if (!hasDatabase()) return []
+  const wanted = CATEGORY_GUIDES[category] || ['impa-code', 'ship-chandler']
+  try {
+    const { rows } = await getPool()!.query(
+      `SELECT slug, title, excerpt FROM blog_posts
+        WHERE status = 'published'
+        ORDER BY array_position($1::text[], slug) NULLS LAST, published_at DESC NULLS LAST
+        LIMIT $2`,
+      [wanted, limit + 6],
+    )
+    return rows.filter((r: ListingGuide) => !BLOG_HIDDEN_SLUGS.has(r.slug)).slice(0, limit)
+  } catch {
+    return []
+  }
 }
 
 export async function getFeaturedListings(limit = 8): Promise<PublicListing[]> {

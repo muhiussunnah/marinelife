@@ -53,6 +53,14 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/db ./db
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/migrate.mjs /app/scripts/cron.mjs ./scripts/
+# Branded listing images: next/og (Satori + resvg wasm) and sharp with its
+# native libvips build. Output tracing does not pick up the wasm files or the
+# libvips shared library, so copy them in full.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/next/dist/compiled/@vercel/og ./node_modules/next/dist/compiled/@vercel/og
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/sharp ./node_modules/sharp
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@img ./node_modules/@img
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/detect-libc ./node_modules/detect-libc
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/semver ./node_modules/semver
 RUN mkdir -p /app/uploads /app/.next/cache && chown -R nextjs:nodejs /app/uploads /app/.next
 
 USER nextjs
