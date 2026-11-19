@@ -125,6 +125,13 @@ export async function POST(req: NextRequest) {
   const images = [...base, ...saved].slice(0, MAX_LISTING_IMAGES)
   await pool.query(`UPDATE listings SET images = $2, updated_at = now() WHERE id = $1`, [listingId, images])
 
+  // Delete generated files (branded photos, spec sheets) this call dropped from the listing.
+  const own = `/uploads/listings/${l.user_id}/`
+  const dropped = (l.images || []).filter(
+    (u: string) => !images.includes(u) && u.startsWith(own) && /(-spec-[0-9a-f]+|-photo-[0-9a-f]+|--b-[0-9a-z]+)\.webp$/.test(u),
+  )
+  if (dropped.length) await db.storage.from('listings').remove(dropped.map((u: string) => u.slice('/uploads/listings/'.length))).catch(() => {})
+
   revalidatePath('/listings')
   revalidatePath(`/listings/${l.slug}`)
   revalidatePath(`/listings/${l.category}`)
