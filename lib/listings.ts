@@ -129,11 +129,15 @@ export async function getGuidesForCategory(category: string, limit = 3): Promise
     const { rows } = await getPool()!.query(
       `SELECT slug, title, excerpt FROM blog_posts
         WHERE status = 'published'
-        ORDER BY array_position($1::text[], slug) NULLS LAST, published_at DESC NULLS LAST
+        ORDER BY array_position($1::text[], ltrim(slug, '/')) NULLS LAST, published_at DESC NULLS LAST
         LIMIT $2`,
       [wanted, limit + 6],
     )
-    return rows.filter((r: ListingGuide) => !BLOG_HIDDEN_SLUGS.has(r.slug)).slice(0, limit)
+    // blog_posts.slug is stored with a leading slash ("/windlass"); hand back the bare slug.
+    return rows
+      .filter((r: ListingGuide) => !BLOG_HIDDEN_SLUGS.has(r.slug))
+      .map((r: ListingGuide) => ({ ...r, slug: r.slug.replace(/^\/+/, '') }))
+      .slice(0, limit)
   } catch {
     return []
   }

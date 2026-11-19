@@ -94,7 +94,7 @@ export default function ListingGallery({ images, title, category }: { images: st
             <button type="button" onClick={() => go(1)} aria-label="Next photo" className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full flex items-center justify-center bg-black/45 text-white hover:bg-black/65">
               <ChevronRight className="w-5 h-5" />
             </button>
-            <span className="absolute bottom-3 right-3 px-2 py-0.5 rounded-md text-xs bg-black/55 text-white">
+            <span className="absolute top-3 left-3 px-2 py-0.5 rounded-md text-xs bg-black/55 text-white">
               {i + 1} / {n}
             </span>
           </>

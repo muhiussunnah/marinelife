@@ -226,7 +226,7 @@ export function specHighlights(description: string | null | undefined, max = 4):
 export async function specCard(info: ListingImageInfo): Promise<Buffer> {
   const logo = await loadLogo()
   const rows: [string, string | null | undefined][] = [
-    ['Maker', info.brand],
+    ['Maker', info.brand && !/^(assorted|various|mixed)$/i.test(info.brand.trim()) ? info.brand : null],
     ['Model', info.model],
     ['Part number', info.part_number],
     ['Condition', info.conditionLabel],
@@ -252,7 +252,7 @@ export async function specCard(info: ListingImageInfo): Promise<Buffer> {
         },
       },
       h('div', { style: { fontSize: 16, fontWeight: 700, color: C.muted, letterSpacing: 1.6, textTransform: 'uppercase' } }, label),
-      h('div', { style: { fontSize: 26, fontWeight: 700, color: C.navy, marginTop: 6 } }, cut(value, wide ? 70 : 20)),
+      h('div', { style: { fontSize: wide ? 24 : 26, fontWeight: 700, color: C.navy, marginTop: 6, lineHeight: 1.3 } }, cut(value, wide ? 150 : 20)),
     )
 
   return render(
