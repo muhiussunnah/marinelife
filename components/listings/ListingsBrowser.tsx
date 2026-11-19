@@ -32,7 +32,8 @@ export default async function ListingsBrowser({
   const condition = one(searchParams.condition)
   const sort = (['featured', 'newest', 'price-asc', 'price-desc'].includes(one(searchParams.sort)) ? one(searchParams.sort) : 'featured') as ListingSort
   const page = Math.max(1, Number(one(searchParams.page)) || 1)
-  const perPage = 24
+  // 3 rows of 4 cards on desktop
+  const perPage = 12
 
   const [{ rows, total }, countries] = await Promise.all([
     searchListings({ q, category, country, condition, sort, page, perPage }),
@@ -49,6 +50,23 @@ export default async function ListingsBrowser({
     const s = p.toString()
     return `${path}${s ? `?${s}` : ''}`
   }
+
+  // Numbered pagination: up to 6 page links around the current page, plus first/last with "…" gaps.
+  const pageWindow = (() => {
+    const start = Math.max(1, Math.min(page - 2, pages - 5))
+    const end = Math.min(pages, start + 5)
+    const items: (number | 'gap')[] = []
+    if (start > 1) items.push(1)
+    if (start > 2) items.push('gap')
+    for (let n = start; n <= end; n++) items.push(n)
+    if (end < pages - 1) items.push('gap')
+    if (end < pages) items.push(pages)
+    return items
+  })()
+  const pageHref = (n: number) => href({ page: n <= 1 ? null : n })
+  const pagerBtn = 'inline-flex items-center gap-1 px-4 h-10 rounded-full text-sm font-medium'
+  const pagerNum = 'inline-flex items-center justify-center min-w-[2.5rem] h-10 px-3 rounded-full text-sm font-semibold'
+  const pagerIdle = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
 
   const selectStyle = { background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
   const intro = heading?.intro || ''
@@ -186,7 +204,7 @@ export default async function ListingsBrowser({
         </div>
 
         {rows.length > 0 ? (
-          <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
             {rows.map((l) => (
               <ListingCard key={l.id} listing={l} />
             ))}
@@ -214,19 +232,37 @@ export default async function ListingsBrowser({
         )}
 
         {pages > 1 && (
-          <nav className="flex items-center justify-center gap-2 mt-10" aria-label="Pagination">
-            {page > 1 && (
-              <Link href={href({ page: page - 1 })} className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+          <nav className="flex flex-wrap items-center justify-center gap-2 mt-10" aria-label="Pagination">
+            {page > 1 ? (
+              <Link href={pageHref(page - 1)} rel="prev" className={pagerBtn} style={pagerIdle}>
                 <ChevronLeft className="w-4 h-4" /> Prev
               </Link>
+            ) : (
+              <span className={`${pagerBtn} opacity-40 cursor-not-allowed`} style={pagerIdle} aria-disabled="true">
+                <ChevronLeft className="w-4 h-4" /> Prev
+              </span>
             )}
-            <span className="px-3 text-sm" style={{ color: 'var(--text-muted)' }}>
-              Page {page} of {pages}
-            </span>
-            {page < pages && (
-              <Link href={href({ page: page + 1 })} className="inline-flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}>
+            {pageWindow.map((n, i) =>
+              n === 'gap' ? (
+                <span key={`gap-${i}`} className="px-1 text-sm" style={{ color: 'var(--text-muted)' }}>…</span>
+              ) : n === page ? (
+                <span key={n} aria-current="page" className={pagerNum} style={{ background: 'var(--btn-primary)', color: '#ffffff', border: '1px solid var(--btn-primary)' }}>
+                  {n}
+                </span>
+              ) : (
+                <Link key={n} href={pageHref(n)} aria-label={`Page ${n}`} className={`${pagerNum} hover:opacity-80`} style={pagerIdle}>
+                  {n}
+                </Link>
+              ),
+            )}
+            {page < pages ? (
+              <Link href={pageHref(page + 1)} rel="next" className={pagerBtn} style={pagerIdle}>
                 Next <ChevronRight className="w-4 h-4" />
               </Link>
+            ) : (
+              <span className={`${pagerBtn} opacity-40 cursor-not-allowed`} style={pagerIdle} aria-disabled="true">
+                Next <ChevronRight className="w-4 h-4" />
+              </span>
             )}
           </nav>
         )}
