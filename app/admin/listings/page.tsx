@@ -213,7 +213,7 @@ export default function AdminListingsPage() {
           <textarea value={introText} onChange={(e) => setIntroText(e.target.value)} rows={8} className={`w-full px-3 py-2 rounded-lg text-sm border ${card} ${text}`} />
           <div className="flex items-center gap-3 mt-3">
             <button onClick={saveIntro} className="px-4 py-2 rounded-lg text-sm font-semibold bg-sky-600 text-white hover:bg-sky-700">Save intro</button>
-            <span className={`text-xs ${muted}`}>{introText.trim() ? introText.trim().split(/s+/).length : 0} words</span>
+            <span className={`text-xs ${muted}`}>{introText.trim() ? introText.trim().split(/\s+/).length : 0} words</span>
             {introSaved && <span className="text-xs text-sky-500">{introSaved}</span>}
           </div>
         </section>
