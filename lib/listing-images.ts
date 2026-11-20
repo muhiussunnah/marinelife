@@ -155,20 +155,20 @@ function watermark(logo: string, w: number, ht: number) {
     },
     h(
       'div',
-      { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.4 } },
+      { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.22 } },
       h(
         'div',
         { style: { display: 'flex', alignItems: 'center', gap: Math.round(size * 0.25) } },
         h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
         h(
           'div',
-          { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 2px 8px rgba(6,26,46,0.85)', letterSpacing: -0.5 } },
+          { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 1px 4px rgba(6,26,46,0.45)', letterSpacing: -0.5 } },
           'MarineYard',
         ),
       ),
       h(
         'div',
-        { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 2px 6px rgba(6,26,46,0.85)', letterSpacing: 1 } },
+        { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 1px 3px rgba(6,26,46,0.45)', letterSpacing: 1 } },
         'marineyard.com',
       ),
     ),
