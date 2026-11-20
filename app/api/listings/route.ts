@@ -5,7 +5,7 @@ import { getSessionUser } from '@/lib/session'
 import { makeListingSlug } from '@/lib/listings'
 import { LISTING_CREDIT_COST } from '@/lib/listings-meta'
 import { validateListing } from '@/lib/listings-validate'
-import { prepareListingImages } from '@/lib/listing-images-store'
+import { prepareListingImagesLater } from '@/lib/listing-images-store'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -99,13 +99,9 @@ export async function POST(req: NextRequest) {
       ]
     )
     await client.query('COMMIT')
-    // Brand the photos and add the spec sheet now the listing exists (never fails the save).
-    try {
-      const images = await prepareListingImages({ userId: user.id, images: value.images, next: value })
-      await pool.query(`UPDATE listings SET images = $2 WHERE id = $1`, [inserted.rows[0].id, images])
-    } catch (e: any) {
-      console.error('[listings] image branding failed:', e?.message || e)
-    }
+    // Brand the photos (logo watermark, collage → single photos) and add the spec sheet in the
+    // background: the seller gets an answer at once and the images update a few seconds later.
+    prepareListingImagesLater(inserted.rows[0].id, { userId: user.id, images: value.images, next: value })
     if (status === 'active') {
       revalidatePath('/listings')
       revalidatePath('/')

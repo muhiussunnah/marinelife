@@ -219,7 +219,7 @@ export default function ListingForm({
         </div>
         <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={(e) => onFiles(e.target.files)} />
         <p className="text-xs mt-3" style={{ color: 'var(--text-muted)' }}>
-          When you save, MarineYard places each photo on its branded frame with the item name, and adds a spec sheet image made from the details below.
+          After you save, MarineYard puts each photo on its branded frame with a logo watermark, splits a collage into single photos (keeping the collage too), and adds a spec sheet made from the details below. Up to {MAX_LISTING_IMAGES} images in all; this takes a few seconds.
         </p>
       </div>
 

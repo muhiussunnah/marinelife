@@ -3,7 +3,8 @@ import { revalidatePath } from 'next/cache'
 import { getPool } from '@/lib/db/pool'
 import { getSessionUser } from '@/lib/session'
 import { validateListing } from '@/lib/listings-validate'
-import { prepareListingImages } from '@/lib/listing-images-store'
+import { MAX_LISTING_IMAGES, isSpecImage } from '@/lib/listings-meta'
+import { prepareListingImagesLater } from '@/lib/listing-images-store'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -67,8 +68,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   const { value, error } = validateListing(body, user.id)
   if (!value) return NextResponse.json({ error }, { status: 400 })
-  // Brand new photos (and re-brand if the caption changed) and refresh the spec sheet.
-  const images = await prepareListingImages({ userId: user.id, images: value.images, next: value, prev: listing }).catch(() => value.images)
+  // Keep the current spec sheet until the background job below refreshes the images.
+  const prevSpec = ((listing.images || []) as string[]).find((u) => isSpecImage(u))
+  const images = [...value.images.filter((u) => !isSpecImage(u)), ...(prevSpec ? [prevSpec] : [])].slice(0, MAX_LISTING_IMAGES)
   // A rejected listing that is edited goes back into the review queue.
   const nextStatus = listing.status === 'rejected' ? 'pending' : listing.status
   await pool.query(
@@ -83,6 +85,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       value.contact_name, value.contact_email || user.email, value.contact_phone, value.whatsapp, nextStatus,
     ]
   )
+  // Brand new photos, re-brand if the caption changed and refresh the spec sheet, after answering.
+  prepareListingImagesLater(listing.id, { userId: user.id, images, next: value, prev: listing })
   revalidatePath('/listings')
   revalidatePath(`/listings/${listing.slug}`)
   return NextResponse.json({ ok: true, slug: listing.slug, status: nextStatus })

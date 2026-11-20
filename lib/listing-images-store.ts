@@ -14,6 +14,7 @@
 import { promises as fs } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { getDb } from '@/lib/db'
+import { getPool } from '@/lib/db/pool'
 import { resolveUploadPath } from '@/lib/db/storage'
 import { CATEGORY_BY_SLUG, CONDITION_LABEL, MAX_LISTING_IMAGES, formatPrice, isSpecImage } from '@/lib/listings-meta'
 import { brandedPhoto, specCard, splitCollage, type ListingImageInfo } from '@/lib/listing-images'
@@ -104,6 +105,8 @@ export async function prepareListingImages(opts: {
   prev?: (ListingImageFields & { images?: string[] | null }) | null
   /** cut collages into single photos, placed after the seller's own photos (default true) */
   split?: boolean
+  /** leave replaced generated files on disk (the caller deletes them once its save succeeds) */
+  keepStale?: boolean
 }): Promise<string[]> {
   const { userId, next, prev } = opts
   const own = `${PREFIX}${userId}/`
@@ -198,6 +201,34 @@ export async function prepareListingImages(opts: {
   }
 
   const gone = stale.filter((u) => !out.includes(u))
-  if (gone.length) await bucket.remove(gone.map(bucketPath)).catch(() => {})
+  if (gone.length && !opts.keepStale) await bucket.remove(gone.map(bucketPath)).catch(() => {})
   return out
+}
+
+const GENERATED = /(-spec-[0-9a-f]+|-photo-[0-9a-f]+|--b-[0-9a-z]+)\.webp$/
+
+/**
+ * Same as prepareListingImages, but runs after the request has been answered
+ * (a collage can take 20+ seconds to turn into ten branded images). The result
+ * is saved only if the listing still has the images it was started with, so a
+ * newer save is never overwritten; generated files it replaced are deleted
+ * only after that save succeeds.
+ */
+export function prepareListingImagesLater(listingId: string, opts: Parameters<typeof prepareListingImages>[0]) {
+  const started = [...opts.images]
+  const own = `${PREFIX}${opts.userId}/`
+  void (async () => {
+    try {
+      const images = await prepareListingImages({ ...opts, keepStale: true })
+      const pool = getPool()
+      if (!pool) return
+      const res = await pool.query(`UPDATE listings SET images = $2 WHERE id = $1 AND images = $3::text[]`, [listingId, images, started])
+      if (!res.rowCount) return // the seller saved again meanwhile; that save does its own images
+      const before = Array.from(new Set([...(opts.prev?.images || []), ...started]))
+      const gone = before.filter((u) => !images.includes(u) && u.startsWith(own) && GENERATED.test(u))
+      if (gone.length) await getDb().storage.from('listings').remove(gone.map(bucketPath)).catch(() => {})
+    } catch (e: any) {
+      console.error('[listing-images] background branding failed:', e?.message || e)
+    }
+  })()
 }
