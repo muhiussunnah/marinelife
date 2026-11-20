@@ -5,6 +5,7 @@
  * File naming (all under /uploads/listings/<userId>/):
  *   <id>.<jpg|png|webp>        original upload, kept so we can re-brand later
  *   <id>--b-<ver>.webp         branded copy (new <ver> each render, so caches never show a stale caption)
+ *   <id>-t<n>.jpg              one photo cut out of an uploaded collage, branded like any original
  *   <ts>-spec-<hex>.webp       branded spec sheet
  *   <ts>-photo-<hex>.webp      branded photo imported by an admin (no original kept)
  *
@@ -15,7 +16,7 @@ import { randomBytes } from 'node:crypto'
 import { getDb } from '@/lib/db'
 import { resolveUploadPath } from '@/lib/db/storage'
 import { CATEGORY_BY_SLUG, CONDITION_LABEL, MAX_LISTING_IMAGES, formatPrice, isSpecImage } from '@/lib/listings-meta'
-import { brandedPhoto, specCard, type ListingImageInfo } from '@/lib/listing-images'
+import { brandedPhoto, specCard, splitCollage, type ListingImageInfo } from '@/lib/listing-images'
 
 const PREFIX = '/uploads/listings/'
 const BRANDED = /--b-[0-9a-z]+\.webp$/
@@ -101,6 +102,8 @@ export async function prepareListingImages(opts: {
   images: string[]
   next: ListingImageFields
   prev?: (ListingImageFields & { images?: string[] | null }) | null
+  /** cut collages into single photos, placed after the seller's own photos (default true) */
+  split?: boolean
 }): Promise<string[]> {
   const { userId, next, prev } = opts
   const own = `${PREFIX}${userId}/`
@@ -110,6 +113,14 @@ export async function prepareListingImages(opts: {
   const bucket = db.storage.from('listings')
   const stale: string[] = []
   const out: string[] = []
+  const fresh: { original: string; bytes: Buffer }[] = []
+  const ver = () => `${Date.now().toString(36)}${randomBytes(2).toString('hex')}`
+  const brandTo = async (original: string, bytes: Buffer) => {
+    const name = `${original.replace(/\.[a-z0-9]+$/i, '')}--b-${ver()}.webp`
+    const { error } = await bucket.upload(bucketPath(name), await brandedPhoto(bytes, info), { contentType: 'image/webp', upsert: true })
+    if (error) throw new Error(error.message)
+    return name
+  }
 
   for (const url of opts.images.filter((u) => !isSpecImage(u)).slice(0, MAX_LISTING_IMAGES)) {
     if (!url.startsWith(own) || ADMIN_BRANDED.test(url)) {
@@ -131,15 +142,37 @@ export async function prepareListingImages(opts: {
     try {
       const bytes = await readUpload(original)
       if (!bytes) throw new Error('original missing')
-      const webp = await brandedPhoto(bytes, info)
-      const name = `${original.replace(/\.[a-z0-9]+$/i, '')}--b-${Date.now().toString(36)}.webp`
-      const { error } = await bucket.upload(bucketPath(name), webp, { contentType: 'image/webp', upsert: true })
-      if (error) throw new Error(error.message)
-      out.push(name)
+      out.push(await brandTo(original, bytes))
       if (BRANDED.test(url)) stale.push(url)
+      // only a new upload is checked for a collage; tiles from earlier saves are already in the list
+      else if (!/-t\d+\.[a-z]+$/i.test(original)) fresh.push({ original, bytes })
     } catch (e: any) {
       console.error('[listing-images] branding failed:', e?.message || e)
       out.push(url)
+    }
+  }
+
+  // Collages: keep the all-in-one picture and add each photo in it as its own image,
+  // after the seller's photos and leaving one place for the spec sheet.
+  if (opts.split !== false) {
+    for (const { original, bytes } of fresh) {
+      if (out.length >= MAX_LISTING_IMAGES - 1) break
+      let tiles: Buffer[] = []
+      try {
+        tiles = await splitCollage(bytes)
+      } catch (e: any) {
+        console.error('[listing-images] collage split failed:', e?.message || e)
+      }
+      for (let i = 0; i < tiles.length && out.length < MAX_LISTING_IMAGES - 1; i++) {
+        try {
+          const tileOriginal = `${original.replace(/\.[a-z0-9]+$/i, '')}-t${i + 1}.jpg`
+          const { error } = await bucket.upload(bucketPath(tileOriginal), tiles[i], { contentType: 'image/jpeg', upsert: true })
+          if (error) throw new Error(error.message)
+          out.push(await brandTo(tileOriginal, tiles[i]))
+        } catch (e: any) {
+          console.error('[listing-images] tile failed:', e?.message || e)
+        }
+      }
     }
   }
 

@@ -136,22 +136,62 @@ function shortName(i: ListingImageInfo) {
   return bm.length >= 4 ? bm : cut(i.title, 48)
 }
 
-/* ── seller photo on a branded frame ──────────────────────────────── */
+/* ── seller photo on a branded frame, with a logo watermark ──────── */
+
+/** Small photos (collage tiles) are enlarged at most this much, so they stay reasonably sharp. */
+const MAX_UPSCALE = 4.5
+
+function watermark(logo: string, w: number, ht: number) {
+  // Centred logo + name across the photo: faint enough to see the part, strong enough that
+  // a re-posted or cropped copy still shows where it came from.
+  const size = Math.round(Math.max(40, Math.min(w, ht) * 0.2))
+  return h(
+    'div',
+    {
+      style: {
+        position: 'absolute', left: 0, top: 0, width: w, height: ht,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      },
+    },
+    h(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.4 } },
+      h(
+        'div',
+        { style: { display: 'flex', alignItems: 'center', gap: Math.round(size * 0.25) } },
+        h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
+        h(
+          'div',
+          { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 2px 8px rgba(6,26,46,0.85)', letterSpacing: -0.5 } },
+          'MarineYard',
+        ),
+      ),
+      h(
+        'div',
+        { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 2px 6px rgba(6,26,46,0.85)', letterSpacing: 1 } },
+        'marineyard.com',
+      ),
+    ),
+  )
+}
 
 export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promise<Buffer> {
-  const [logo] = await Promise.all([loadLogo()])
+  const logo = await loadLogo()
   const BAR = 150
   const boxW = W - 2 * 36 - 2 * 28
   const boxH = H - BAR - 2 * 30 - 2 * 24
 
-  const fitted = await sharp(photo)
-    .rotate()
-    .flatten({ background: '#ffffff' }) // transparent PNGs go on white, not black
-    .resize({ width: boxW, height: boxH, fit: 'inside', kernel: 'lanczos3', withoutEnlargement: false })
-    .sharpen({ sigma: 0.7 })
+  // transparent PNGs go on white, not black
+  const flat = await sharp(photo).rotate().flatten({ background: '#ffffff' }).png().toBuffer({ resolveWithObject: true })
+  const scale = Math.min(boxW / flat.info.width, boxH / flat.info.height, MAX_UPSCALE)
+  const pw = Math.max(1, Math.round(flat.info.width * scale))
+  const ph = Math.max(1, Math.round(flat.info.height * scale))
+  const fitted = await sharp(flat.data)
+    .resize({ width: pw, height: ph, fit: 'fill', kernel: 'lanczos3' })
+    .sharpen({ sigma: scale > 1.5 ? 0.9 : 0.6 })
     .jpeg({ quality: 92 })
-    .toBuffer({ resolveWithObject: true })
-  const src = `data:image/jpeg;base64,${fitted.data.toString('base64')}`
+    .toBuffer()
+  const src = `data:image/jpeg;base64,${fitted.toString('base64')}`
 
   const meta = [info.conditionLabel, info.location].filter(Boolean).join('  ·  ')
 
@@ -177,7 +217,12 @@ export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promi
               boxShadow: '0 10px 30px rgba(10,31,51,0.08)',
             },
           },
-          h('img', { src, width: fitted.info.width, height: fitted.info.height, style: { borderRadius: 14 } }),
+          h(
+            'div',
+            { style: { position: 'relative', display: 'flex', width: pw, height: ph } },
+            h('img', { src, width: pw, height: ph, style: { borderRadius: 14 } }),
+            watermark(logo, pw, ph),
+          ),
         ),
       ),
       // brand bar
@@ -204,6 +249,98 @@ export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promi
       ),
     ),
   )
+}
+
+/* ── collage → single photos ──────────────────────────────────────── */
+
+type Rect = { x: number; y: number; w: number; h: number }
+
+/**
+ * Many sellers send one picture made of several photos separated by white
+ * gutters. This finds those photos (cutting along full-width or full-height
+ * white lines, recursively) and returns each one as its own JPEG, in reading
+ * order. Returns [] when the image is not a collage.
+ */
+export async function splitCollage(input: Buffer, maxTiles = 16): Promise<Buffer[]> {
+  const full = await sharp(input).rotate().flatten({ background: '#ffffff' }).png().toBuffer({ resolveWithObject: true })
+  const FW = full.info.width
+  const FH = full.info.height
+  if (FW < 200 || FH < 150) return []
+  // analyse a copy of at most 1200 px, cut the full-size image
+  const k = Math.min(1, 1200 / Math.max(FW, FH))
+  const { data, info } = await sharp(full.data)
+    .resize({ width: Math.max(1, Math.round(FW * k)), height: Math.max(1, Math.round(FH * k)), fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  const AW = info.width
+  const AH = info.height
+  const ch = info.channels
+  const light = new Uint8Array(AW * AH)
+  for (let i = 0, p = 0; i < AW * AH; i++, p += ch) light[i] = data[p] > 232 && data[p + 1] > 232 && data[p + 2] > 232 ? 1 : 0
+
+  const gutterRow = (r: Rect, y: number) => {
+    let n = 0
+    for (let x = r.x; x < r.x + r.w; x++) n += light[y * AW + x]
+    return n >= r.w * 0.985
+  }
+  const gutterCol = (r: Rect, x: number) => {
+    let n = 0
+    for (let y = r.y; y < r.y + r.h; y++) n += light[y * AW + x]
+    return n >= r.h * 0.985
+  }
+  // runs of content between gutter lines along one axis
+  const segments = (r: Rect, rows: boolean): Rect[] => {
+    const len = rows ? r.h : r.w
+    const out: Rect[] = []
+    let start = -1
+    for (let i = 0; i <= len; i++) {
+      const gutter = i === len || (rows ? gutterRow(r, r.y + i) : gutterCol(r, r.x + i))
+      if (!gutter && start < 0) start = i
+      if (gutter && start >= 0) {
+        if (i - start >= 12) out.push(rows ? { x: r.x, y: r.y + start, w: r.w, h: i - start } : { x: r.x + start, y: r.y, w: i - start, h: r.h })
+        start = -1
+      }
+    }
+    return out
+  }
+  const leaves: Rect[] = []
+  const walk = (r: Rect, depth: number) => {
+    if (leaves.length > maxTiles * 2) return
+    if (depth < 6) {
+      for (const rows of [true, false]) {
+        const segs = segments(r, rows)
+        if (segs.length >= 2) {
+          segs.forEach((s) => walk(s, depth + 1))
+          return
+        }
+        // one run smaller than r only trims white margins: keep looking inside it
+        if (segs.length === 1 && (segs[0].w < r.w - 2 || segs[0].h < r.h - 2)) {
+          walk(segs[0], depth + 1)
+          return
+        }
+      }
+    }
+    leaves.push(r)
+  }
+  walk({ x: 0, y: 0, w: AW, h: AH }, 0)
+
+  const minSide = Math.max(40, Math.min(AW, AH) * 0.12)
+  const tiles = leaves.filter((r) => r.w >= minSide && r.h >= minSide && r.w * r.h >= AW * AH * 0.015)
+  if (tiles.length < 2 || tiles.length > maxTiles) return []
+  // a real collage is mostly photos with thin gutters
+  const covered = tiles.reduce((a, r) => a + r.w * r.h, 0)
+  if (covered < AW * AH * 0.55) return []
+
+  const out: Buffer[] = []
+  for (const r of tiles) {
+    const left = Math.max(0, Math.floor(r.x / k))
+    const top = Math.max(0, Math.floor(r.y / k))
+    const width = Math.max(1, Math.min(FW - left, Math.ceil(r.w / k)))
+    const height = Math.max(1, Math.min(FH - top, Math.ceil(r.h / k)))
+    out.push(await sharp(full.data).extract({ left, top, width, height }).jpeg({ quality: 94 }).toBuffer())
+  }
+  return out
 }
 
 /* ── spec card ────────────────────────────────────────────────────── */

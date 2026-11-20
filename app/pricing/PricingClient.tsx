@@ -44,7 +44,7 @@ const PACKS = [
       '50% off your first paid month',
       '14-day money-back guarantee',
       'Listings go live instantly',
-      'Up to 8 photos per listing',
+      'Up to 10 photos per listing',
       'Buyer inquiries in your dashboard',
       'Cancel anytime, 1 click',
     ],

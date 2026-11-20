@@ -4,7 +4,7 @@
 
 export const LISTING_CREDIT_COST = 10
 export const FREE_LISTINGS = 9
-export const MAX_LISTING_IMAGES = 8
+export const MAX_LISTING_IMAGES = 10
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 
 /** Branded spec-sheet images are stored as "...-spec-<hex>.webp" (see lib/listing-images-store.ts). */

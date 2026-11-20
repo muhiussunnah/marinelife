@@ -342,7 +342,7 @@ export default async function HomePage() {
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               { name: 'Free', price: '$0', note: 'forever', items: ['9 listings', 'Buyer inquiries inbox', 'Standard placement'], icon: <Gift className="w-4 h-4" /> },
-              { name: 'Starter', price: '$4.99', note: '/month', items: ['12 listings / month', 'Listings live instantly', 'Up to 8 photos each'], icon: <BadgeCheck className="w-4 h-4" /> },
+              { name: 'Starter', price: '$4.99', note: '/month', items: ['12 listings / month', 'Listings live instantly', 'Up to 10 photos each'], icon: <BadgeCheck className="w-4 h-4" /> },
               { name: 'Explorer', price: '$9.99', note: '/month', items: ['55 listings / month', 'Featured badge', 'Shown above free listings'], icon: <Star className="w-4 h-4" />, hot: true },
               { name: 'Pro', price: '$19.99', note: '/month', items: ['120 listings / month', 'Top placement', 'Priority support'], icon: <Crown className="w-4 h-4" /> },
             ].map((p) => (
