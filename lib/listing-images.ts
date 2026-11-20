@@ -137,118 +137,161 @@ function shortName(i: ListingImageInfo) {
 }
 
 /* ── seller photo on a branded frame, with a logo watermark ──────── */
+//
+// Satori/resvg run on the main thread, so they only draw what is shared: the
+// frame + caption bar (once per listing caption) and the watermark (once per
+// process). Each photo is then resized and composited by sharp, which works
+// on libuv's thread pool and doesn't hold up other requests.
 
 /** Small photos (collage tiles) are enlarged at most this much, so they stay reasonably sharp. */
 const MAX_UPSCALE = 4.5
+const BAR = 150
+/** the white box the photo sits in */
+const BOX = { x: 36, y: 30, w: W - 72, h: H - BAR - 60 }
+const PHOTO_MAX = { w: BOX.w - 56, h: BOX.h - 48 }
 
-function watermark(logo: string, w: number, ht: number) {
-  // Centred logo + name across the photo: faint enough to see the part, strong enough that
-  // a re-posted or cropped copy still shows where it came from.
-  const size = Math.round(Math.max(40, Math.min(w, ht) * 0.2))
-  return h(
-    'div',
-    {
-      style: {
-        position: 'absolute', left: 0, top: 0, width: w, height: ht,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      },
-    },
-    h(
-      'div',
-      { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.22 } },
-      h(
-        'div',
-        { style: { display: 'flex', alignItems: 'center', gap: Math.round(size * 0.25) } },
-        h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
+async function renderPng(el: El, width = W, height = H): Promise<Buffer> {
+  const res = new ImageResponse(el as any, { width, height, fonts: (await loadFonts()) as any })
+  return Buffer.from(await res.arrayBuffer())
+}
+
+const frameCache = new Map<string, Promise<Buffer>>()
+
+/** 1200×900 PNG: light page, empty white photo box, navy caption bar. */
+function frameFor(info: ListingImageInfo): Promise<Buffer> {
+  const name = cut(shortName(info), 34)
+  const meta = [info.conditionLabel, info.location].filter(Boolean).join('  ·  ')
+  const line = cut(meta ? `${meta}  ·  marineyard.com` : 'marineyard.com', 58)
+  const key = `${name}\n${line}`
+  let p = frameCache.get(key)
+  if (!p) {
+    if (frameCache.size > 40) frameCache.clear()
+    p = (async () => {
+      const logo = await loadLogo()
+      return renderPng(
         h(
           'div',
-          { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 1px 4px rgba(6,26,46,0.45)', letterSpacing: -0.5 } },
-          'MarineYard',
+          { style: { width: W, height: H, display: 'flex', flexDirection: 'column', background: C.paper, fontFamily: 'Inter' } },
+          h(
+            'div',
+            { style: { flex: 1, display: 'flex', padding: `${BOX.y}px ${BOX.x}px` } },
+            h('div', {
+              style: {
+                flex: 1,
+                display: 'flex',
+                background: '#ffffff',
+                borderRadius: 28,
+                border: `2px solid ${C.line}`,
+                boxShadow: '0 10px 30px rgba(10,31,51,0.08)',
+              },
+            }),
+          ),
+          h(
+            'div',
+            {
+              style: {
+                height: BAR,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0 44px',
+                backgroundImage: `linear-gradient(120deg, ${C.deep} 0%, ${C.accent} 70%, ${C.sky} 100%)`,
+                borderTop: `5px solid ${C.amber}`,
+              },
+            },
+            brandMark(logo, 70, true),
+            h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', maxWidth: 700 } },
+              h('div', { style: { fontFamily: 'Sora', fontWeight: 700, fontSize: 34, color: '#ffffff', letterSpacing: -0.5 } }, name),
+              h('div', { style: { fontSize: 22, fontWeight: 600, color: C.skySoft, marginTop: 6 } }, line),
+            ),
+          ),
         ),
-      ),
-      h(
-        'div',
-        { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 1px 3px rgba(6,26,46,0.45)', letterSpacing: 1 } },
-        'marineyard.com',
-      ),
-    ),
-  )
+      )
+    })().catch((e) => {
+      frameCache.delete(key)
+      throw e
+    })
+    frameCache.set(key, p)
+  }
+  return p
+}
+
+let watermarkCache: Promise<Buffer> | null = null
+
+/** Transparent PNG of the centred watermark: logo + "MarineYard" over "marineyard.com", already faded. */
+function watermarkPng(): Promise<Buffer> {
+  if (!watermarkCache) {
+    watermarkCache = (async () => {
+      const logo = await loadLogo()
+      const size = 200
+      const png = await renderPng(
+        h(
+          'div',
+          { style: { width: 1000, height: 380, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
+          h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.22 } },
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: Math.round(size * 0.25) } },
+              h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
+              h(
+                'div',
+                { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 2px 8px rgba(6,26,46,0.45)', letterSpacing: -2 } },
+                'MarineYard',
+              ),
+            ),
+            h(
+              'div',
+              { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 2px 6px rgba(6,26,46,0.45)', letterSpacing: 3 } },
+              'marineyard.com',
+            ),
+          ),
+        ),
+        1000,
+        380,
+      )
+      return sharp(png).trim().png().toBuffer()
+    })().catch((e) => {
+      watermarkCache = null
+      throw e
+    })
+  }
+  return watermarkCache
 }
 
 export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promise<Buffer> {
-  const logo = await loadLogo()
-  const BAR = 150
-  const boxW = W - 2 * 36 - 2 * 28
-  const boxH = H - BAR - 2 * 30 - 2 * 24
+  const [frame, wm] = await Promise.all([frameFor(info), watermarkPng()])
 
   // transparent PNGs go on white, not black
   const flat = await sharp(photo).rotate().flatten({ background: '#ffffff' }).png().toBuffer({ resolveWithObject: true })
-  const scale = Math.min(boxW / flat.info.width, boxH / flat.info.height, MAX_UPSCALE)
+  const scale = Math.min(PHOTO_MAX.w / flat.info.width, PHOTO_MAX.h / flat.info.height, MAX_UPSCALE)
   const pw = Math.max(1, Math.round(flat.info.width * scale))
   const ph = Math.max(1, Math.round(flat.info.height * scale))
-  const fitted = await sharp(flat.data)
+
+  // watermark: about 90% of the photo's short side wide, never wider than 80% of the photo
+  const wmMeta = await sharp(wm).metadata()
+  let wmW = Math.max(40, Math.round(Math.min(pw * 0.8, Math.min(pw, ph) * 0.9)))
+  if (wmMeta.width && wmMeta.height && (wmW * wmMeta.height) / wmMeta.width > ph * 0.8) wmW = Math.round((ph * 0.8 * wmMeta.width) / wmMeta.height)
+  const wmScaled = await sharp(wm).resize({ width: wmW }).png().toBuffer()
+
+  const rounded = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}"><rect width="${pw}" height="${ph}" rx="14" ry="14" fill="#fff"/></svg>`)
+  const shot = await sharp(flat.data)
     .resize({ width: pw, height: ph, fit: 'fill', kernel: 'lanczos3' })
     .sharpen({ sigma: scale > 1.5 ? 0.9 : 0.6 })
-    .jpeg({ quality: 92 })
+    .png()
     .toBuffer()
-  const src = `data:image/jpeg;base64,${fitted.toString('base64')}`
+  const marked = await sharp(shot)
+    .composite([{ input: wmScaled, gravity: 'center' }, { input: rounded, blend: 'dest-in' }])
+    .png()
+    .toBuffer()
 
-  const meta = [info.conditionLabel, info.location].filter(Boolean).join('  ·  ')
-
-  return render(
-    h(
-      'div',
-      { style: { width: W, height: H, display: 'flex', flexDirection: 'column', background: C.paper, fontFamily: 'Inter' } },
-      // photo
-      h(
-        'div',
-        { style: { flex: 1, display: 'flex', padding: '30px 36px' } },
-        h(
-          'div',
-          {
-            style: {
-              flex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              background: '#ffffff',
-              borderRadius: 28,
-              border: `2px solid ${C.line}`,
-              boxShadow: '0 10px 30px rgba(10,31,51,0.08)',
-            },
-          },
-          h(
-            'div',
-            { style: { position: 'relative', display: 'flex', width: pw, height: ph } },
-            h('img', { src, width: pw, height: ph, style: { borderRadius: 14 } }),
-            watermark(logo, pw, ph),
-          ),
-        ),
-      ),
-      // brand bar
-      h(
-        'div',
-        {
-          style: {
-            height: BAR,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 44px',
-            backgroundImage: `linear-gradient(120deg, ${C.deep} 0%, ${C.accent} 70%, ${C.sky} 100%)`,
-            borderTop: `5px solid ${C.amber}`,
-          },
-        },
-        brandMark(logo, 70, true),
-        h(
-          'div',
-          { style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', maxWidth: 700 } },
-          h('div', { style: { fontFamily: 'Sora', fontWeight: 700, fontSize: 34, color: '#ffffff', letterSpacing: -0.5 } }, cut(shortName(info), 34)),
-          h('div', { style: { fontSize: 22, fontWeight: 600, color: C.skySoft, marginTop: 6 } }, cut(meta ? `${meta}  ·  marineyard.com` : 'marineyard.com', 58)),
-        ),
-      ),
-    ),
-  )
+  return sharp(frame)
+    .composite([{ input: marked, left: Math.round(BOX.x + (BOX.w - pw) / 2), top: Math.round(BOX.y + (BOX.h - ph) / 2) }])
+    .webp({ quality: 86, effort: 5 })
+    .toBuffer()
 }
 
 /* ── collage → single photos ──────────────────────────────────────── */
