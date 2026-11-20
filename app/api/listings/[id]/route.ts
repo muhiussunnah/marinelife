@@ -86,7 +86,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     ]
   )
   // Brand new photos, re-brand if the caption changed and refresh the spec sheet, after answering.
-  prepareListingImagesLater(listing.id, { userId: user.id, images, next: value, prev: listing })
+  prepareListingImagesLater({ listingId: listing.id, userId: user.id, images, next: value, prev: listing })
   revalidatePath('/listings')
   revalidatePath(`/listings/${listing.slug}`)
   return NextResponse.json({ ok: true, slug: listing.slug, status: nextStatus })

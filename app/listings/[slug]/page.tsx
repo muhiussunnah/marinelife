@@ -13,7 +13,7 @@ import CategoryIcon from '@/components/listings/CategoryIcon'
 import ListingsBrowser, { hasListingFilters, type SP } from '@/components/listings/ListingsBrowser'
 import { getListingBySlug, getRelatedListings, incrementListingViews, userHasPaidPlan, getCategoryIntroOverrides, getGuidesForCategory } from '@/lib/listings'
 import { uploadedImageSize } from '@/lib/image-size'
-import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice, categoryPath, isPaidLead } from '@/lib/listings-meta'
+import { CATEGORY_BY_SLUG, CONDITION_LABEL, formatPrice, categoryPath, isPaidLead, isSpecImage } from '@/lib/listings-meta'
 import { CATEGORY_INTROS } from '@/lib/category-intros'
 import { getSessionUser } from '@/lib/session'
 import { isAdminEmail } from '@/lib/admin'
@@ -192,6 +192,20 @@ export default async function ListingPage({ params, searchParams }: { params: { 
 
   const card = { background: 'var(--bg-card)', border: '1px solid var(--border)' }
   const itemName = [listing.brand && listing.brand !== 'Assorted' ? listing.brand : '', listing.model || ''].filter(Boolean).join(' ')
+
+  // Alt text per picture: "<item>, <condition>, photo 3 of 10" / "..., all photos" / "... – specification sheet"
+  const pics = listing.images || []
+  const picSources = listing.image_sources || {}
+  const picName = listing.title.split(/\s+[–—-]\s+/)[0].trim() || listing.title
+  const picCondition = CONDITION_LABEL[listing.condition] || ''
+  const picInfo = pics.map((u) => picSources[u.split('?')[0]] || null)
+  const picAlts = pics.map((u, k) => {
+    const kind = picInfo[k]?.kind || (isSpecImage(u) ? 'spec' : 'photo')
+    if (kind === 'spec') return `${picName} – specification sheet`
+    const lead = [picName, picCondition].filter(Boolean).join(', ')
+    return kind === 'collage' ? `${lead}, all photos` : `${lead}, photo ${k + 1} of ${pics.length}`
+  })
+  const picSizes = picInfo.map((x) => (x?.w && x?.h ? { w: x.w, h: x.h } : null))
   const nextPath = `/listings/${listing.slug}`
 
   return (
@@ -221,7 +235,7 @@ export default async function ListingPage({ params, searchParams }: { params: { 
         <div className="grid lg:grid-cols-[minmax(0,1fr)_380px] gap-8">
           {/* Left */}
           <div className="min-w-0">
-            <ListingGallery images={listing.images || []} title={listing.title} category={listing.category} />
+            <ListingGallery images={pics} title={listing.title} category={listing.category} alts={picAlts} sizes={picSizes} />
 
             <section className="mt-8 rounded-3xl p-6 sm:p-8" style={card}>
               <h2 className="font-playfair text-xl font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Specifications</h2>

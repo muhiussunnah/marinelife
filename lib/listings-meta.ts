@@ -7,8 +7,8 @@ export const FREE_LISTINGS = 9
 export const MAX_LISTING_IMAGES = 10
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 
-/** Branded spec-sheet images are stored as "...-spec-<hex>.webp" (see lib/listing-images-store.ts). */
-export const isSpecImage = (url: string) => /-spec-[0-9a-f]+\.webp$/.test(String(url || ''))
+/** Branded spec sheets: "<seo-name>-specifications.webp?v=…" (older: "...-spec-<hex>.webp"). See lib/listing-images-store.ts. */
+export const isSpecImage = (url: string) => /(-spec-[0-9a-f]+|-specifications)\.webp(\?.*)?$/.test(String(url || ''))
 
 export type CategoryIcon =
   | 'Cog' | 'Zap' | 'Fan' | 'Droplets' | 'Gauge' | 'Flame' | 'Anchor' | 'Radar'
@@ -103,6 +103,8 @@ export interface PublicListing {
   is_public_offer?: boolean
   meta_title?: string | null
   meta_description?: string | null
+  /** branded picture path -> kind and pixel size (lib/listing-images-store.ts) */
+  image_sources?: Record<string, { kind?: 'photo' | 'collage' | 'tile' | 'spec'; w?: number; h?: number; src?: string | null }> | null
 }
 
 /** Listings whose contact details need a paid plan ("paid leads"). */

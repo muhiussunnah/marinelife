@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, ZoomIn, Camera } from 'lucide-react'
 import CategoryIcon from './CategoryIcon'
+import { isSpecImage } from '@/lib/listings-meta'
 
 /**
  * Product gallery: one large image with hover-to-zoom (the image is scaled
@@ -9,16 +10,30 @@ import CategoryIcon from './CategoryIcon'
  * thumbnails below that switch the main image. On touch screens a tap opens
  * the full-size photo.
  */
-export default function ListingGallery({ images, title, category }: { images: string[]; title: string; category: string }) {
+export default function ListingGallery({
+  images,
+  title,
+  category,
+  alts,
+  sizes,
+}: {
+  images: string[]
+  title: string
+  category: string
+  /** alt text per picture (built on the server from the picture's kind) */
+  alts?: string[]
+  /** pixel size per picture, when known */
+  sizes?: ({ w: number; h: number } | null)[]
+}) {
   const [i, setI] = useState(0)
   const [zoom, setZoom] = useState<{ x: number; y: number } | null>(null)
   const [scale, setScale] = useState(2.5)
   const frame = useRef<HTMLDivElement>(null)
   const n = images.length
-  // Branded spec sheets are stored as "...-spec-<id>.webp"; everything else is a photo.
-  const isSpec = (src: string) => /-spec-[0-9a-f]+\.webp$/.test(src)
+  const isSpec = isSpecImage
   const altFor = (src: string, k: number) =>
-    isSpec(src) ? `${title} – specification sheet` : `${title} – photo ${k + 1}${n > 1 ? ` of ${n}` : ''}`
+    alts?.[k] || (isSpec(src) ? `${title} – specification sheet` : `${title} – photo ${k + 1}${n > 1 ? ` of ${n}` : ''}`)
+  const dim = (k: number) => (sizes?.[k] ? { width: sizes[k]!.w, height: sizes[k]!.h } : {})
 
   if (!n) {
     return (
@@ -63,6 +78,7 @@ export default function ListingGallery({ images, title, category }: { images: st
         <img
           src={images[i]}
           alt={altFor(images[i], i)}
+          {...dim(i)}
           className="absolute inset-0 w-full h-full object-contain transition-transform duration-150 ease-out"
           style={
             zoom
@@ -122,7 +138,7 @@ export default function ListingGallery({ images, title, category }: { images: st
               aria-current={k === i}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={src} alt="" className={`w-full h-full ${isSpec(src) ? 'object-cover object-left-top' : 'object-cover'}`} loading="lazy" />
+              <img src={src} alt="" {...dim(k)} className={`w-full h-full ${isSpec(src) ? 'object-cover object-left-top' : 'object-cover'}`} loading="lazy" />
             </button>
           ))}
         </div>

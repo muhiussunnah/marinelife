@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     await client.query('COMMIT')
     // Brand the photos (logo watermark, collage → single photos) and add the spec sheet in the
     // background: the seller gets an answer at once and the images update a few seconds later.
-    prepareListingImagesLater(inserted.rows[0].id, { userId: user.id, images: value.images, next: value })
+    prepareListingImagesLater({ listingId: inserted.rows[0].id, userId: user.id, images: value.images, next: value })
     if (status === 'active') {
       revalidatePath('/listings')
       revalidatePath('/')

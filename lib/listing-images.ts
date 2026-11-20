@@ -143,8 +143,8 @@ function shortName(i: ListingImageInfo) {
 // process). Each photo is then resized and composited by sharp, which works
 // on libuv's thread pool and doesn't hold up other requests.
 
-/** Small photos (collage tiles) are enlarged at most this much, so they stay reasonably sharp. */
-const MAX_UPSCALE = 4.5
+/** Small photos (collage tiles) are enlarged at most 2x, so they stay sharp (dev ticket 2026-11-20). */
+const MAX_UPSCALE = 2
 const BAR = 150
 /** the white box the photo sits in */
 const BOX = { x: 36, y: 30, w: W - 72, h: H - BAR - 60 }
@@ -220,38 +220,39 @@ function frameFor(info: ListingImageInfo): Promise<Buffer> {
 
 let watermarkCache: Promise<Buffer> | null = null
 
-/** Transparent PNG of the centred watermark: logo + "MarineYard" over "marineyard.com", already faded. */
+/**
+ * Transparent PNG of the corner mark: logo + "marineyard.com" on a soft navy
+ * pill, already faded to ~40%. It goes in the photo's bottom-right corner so
+ * it doesn't hide a nameplate, and the caption bar below carries the brand too.
+ */
 function watermarkPng(): Promise<Buffer> {
   if (!watermarkCache) {
     watermarkCache = (async () => {
       const logo = await loadLogo()
-      const size = 200
+      const size = 96
       const png = await renderPng(
         h(
           'div',
-          { style: { width: 1000, height: 380, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
+          { style: { width: 600, height: 160, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
           h(
             'div',
-            { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', opacity: 0.22 } },
-            h(
-              'div',
-              { style: { display: 'flex', alignItems: 'center', gap: Math.round(size * 0.25) } },
-              h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
-              h(
-                'div',
-                { style: { display: 'flex', fontFamily: 'Sora', fontWeight: 800, fontSize: Math.round(size * 0.62), color: '#ffffff', textShadow: '0 2px 8px rgba(6,26,46,0.45)', letterSpacing: -2 } },
-                'MarineYard',
-              ),
-            ),
-            h(
-              'div',
-              { style: { display: 'flex', marginTop: Math.round(size * 0.08), fontSize: Math.round(size * 0.5), fontWeight: 700, color: '#ffffff', textShadow: '0 2px 6px rgba(6,26,46,0.45)', letterSpacing: 3 } },
-              'marineyard.com',
-            ),
+            {
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: 18,
+                padding: '14px 26px 14px 14px',
+                borderRadius: 999,
+                background: 'rgba(6,26,46,0.55)',
+                opacity: 0.42,
+              },
+            },
+            h('img', { src: logo, width: size, height: size, style: { borderRadius: Math.round(size * 0.24) } }),
+            h('div', { style: { display: 'flex', fontSize: 52, fontWeight: 700, color: '#ffffff', letterSpacing: 0.5 } }, 'marineyard.com'),
           ),
         ),
-        1000,
-        380,
+        600,
+        160,
       )
       return sharp(png).trim().png().toBuffer()
     })().catch((e) => {
@@ -271,11 +272,13 @@ export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promi
   const pw = Math.max(1, Math.round(flat.info.width * scale))
   const ph = Math.max(1, Math.round(flat.info.height * scale))
 
-  // watermark: about 90% of the photo's short side wide, never wider than 80% of the photo
+  // corner mark: about 13% of the photo width (readable minimum 120 px), bottom-right
   const wmMeta = await sharp(wm).metadata()
-  let wmW = Math.max(40, Math.round(Math.min(pw * 0.8, Math.min(pw, ph) * 0.9)))
-  if (wmMeta.width && wmMeta.height && (wmW * wmMeta.height) / wmMeta.width > ph * 0.8) wmW = Math.round((ph * 0.8 * wmMeta.width) / wmMeta.height)
-  const wmScaled = await sharp(wm).resize({ width: wmW }).png().toBuffer()
+  let wmW = Math.max(120, Math.round(pw * 0.13))
+  wmW = Math.min(wmW, Math.round(pw * 0.6))
+  if (wmMeta.width && wmMeta.height && (wmW * wmMeta.height) / wmMeta.width > ph * 0.3) wmW = Math.round((ph * 0.3 * wmMeta.width) / wmMeta.height)
+  const wmScaled = await sharp(wm).resize({ width: Math.max(24, wmW) }).png().toBuffer({ resolveWithObject: true })
+  const margin = Math.max(8, Math.round(Math.min(pw, ph) * 0.03))
 
   const rounded = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}"><rect width="${pw}" height="${ph}" rx="14" ry="14" fill="#fff"/></svg>`)
   const shot = await sharp(flat.data)
@@ -284,14 +287,36 @@ export async function brandedPhoto(photo: Buffer, info: ListingImageInfo): Promi
     .png()
     .toBuffer()
   const marked = await sharp(shot)
-    .composite([{ input: wmScaled, gravity: 'center' }, { input: rounded, blend: 'dest-in' }])
+    .composite([
+      {
+        input: wmScaled.data,
+        left: Math.max(0, pw - wmScaled.info.width - margin),
+        top: Math.max(0, ph - wmScaled.info.height - margin),
+      },
+      { input: rounded, blend: 'dest-in' },
+    ])
     .png()
     .toBuffer()
 
-  return sharp(frame)
-    .composite([{ input: marked, left: Math.round(BOX.x + (BOX.w - pw) / 2), top: Math.round(BOX.y + (BOX.h - ph) / 2) }])
-    .webp({ quality: 86, effort: 5 })
-    .toBuffer()
+  const layers: sharp.OverlayOptions[] = []
+  // A small photo (e.g. a collage tile, enlarged at most 2x) would float in a big white box:
+  // fill the box behind it with a soft, blurred and lightened copy of the same photo.
+  if (pw * ph < PHOTO_MAX.w * PHOTO_MAX.h * 0.7) {
+    const bw = BOX.w - 4
+    const bh = BOX.h - 4
+    const boxMask = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${bw}" height="${bh}"><rect width="${bw}" height="${bh}" rx="26" ry="26" fill="#fff"/></svg>`)
+    const veil = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${bw}" height="${bh}"><rect width="${bw}" height="${bh}" fill="#ffffff" fill-opacity="0.55"/></svg>`)
+    const backdrop = await sharp(flat.data)
+      .resize({ width: bw, height: bh, fit: 'cover' })
+      .blur(28)
+      .composite([{ input: veil }, { input: boxMask, blend: 'dest-in' }])
+      .png()
+      .toBuffer()
+    layers.push({ input: backdrop, left: BOX.x + 2, top: BOX.y + 2 })
+  }
+  layers.push({ input: marked, left: Math.round(BOX.x + (BOX.w - pw) / 2), top: Math.round(BOX.y + (BOX.h - ph) / 2) })
+
+  return sharp(frame).composite(layers).webp({ quality: 86, effort: 5 }).toBuffer()
 }
 
 /* ── collage → single photos ──────────────────────────────────────── */

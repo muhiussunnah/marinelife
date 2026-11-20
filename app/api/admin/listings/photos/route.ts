@@ -13,7 +13,6 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const GENERATED = /(-spec-[0-9a-f]+|-photo-[0-9a-f]+|--b-[0-9a-z]+)\.webp$/
 
 function sniff(b: Uint8Array): { ext: string; type: string } | null {
   if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { ext: 'jpg', type: 'image/jpeg' }
@@ -39,14 +38,16 @@ function publicHttpUrl(raw: string): URL | null {
 
 /**
  * POST /api/admin/listings/photos — admin only.
- *   { listingId, urls?: string[], replace?: boolean, split?: boolean }
+ *   { listingId, urls?: string[], replace?: boolean, splitCollage?: boolean (alias: split) }
  *
  * Downloads each photo on the server and saves the original in the listing
  * owner's upload folder, then runs the same pipeline as a seller's save:
- * every photo goes on the MarineYard frame with the logo watermark, a
- * collage is also cut into its single photos, and the spec sheet goes last
- * (10 images at most). replace: true drops the listing's current images.
- * With no urls it just re-renders the current images (e.g. after a design change).
+ * every photo goes on the MarineYard frame with the corner mark, a collage is
+ * also cut into its single photos (splitCollage, default true), and the spec
+ * sheet goes last (10 images at most). replace: true drops the listing's
+ * current images. With no urls it re-renders the current images from their
+ * originals (e.g. after a design change); with splitCollage it also re-checks
+ * them for collages.
  */
 export async function POST(req: NextRequest) {
   const user = await getSessionUser()
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
   if (!pool) return NextResponse.json({ error: 'Database unavailable' }, { status: 503 })
   const { rows } = await pool.query(
     `SELECT id, user_id, slug, title, category, brand, model, part_number, condition, quantity, city, country,
-            price, currency, price_on_request, description, images
+            price, currency, price_on_request, description, images, image_sources
        FROM listings WHERE id = $1`,
     [listingId],
   )
@@ -94,24 +95,33 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const split = body?.splitCollage ?? body?.split
   const current: string[] = (l.images || []).filter((u: string) => !isSpecImage(u))
-  // No URLs = re-render what the listing already has (from the originals we kept).
-  const rerender = !urls.length
-  const input = body?.replace ? originals : [...current, ...originals]
-  const images = await prepareListingImages({
+  // No URLs = re-render what the listing already has, from the originals we kept.
+  let input = body?.replace ? originals : [...current, ...originals]
+  if (!urls.length && split === true) {
+    // re-check the current pictures for collages: start again from their originals
+    const srcs = current
+      .map((u) => (l.image_sources || {})[u.split('?')[0]])
+      .filter((x: any) => x && x.src && x.kind !== 'tile')
+      .map((x: any) => x.src as string)
+    if (srcs.length) input = srcs
+  }
+  const out = await prepareListingImages({
+    listingId: l.id,
     userId: l.user_id,
     images: input,
     next: l,
-    // prev = null forces a fresh render of everything (and a new spec sheet)
-    prev: body?.replace || rerender ? null : l,
-    split: body?.split !== false,
+    prev: l,
+    rerender: true,
+    split: split !== false,
   })
-  await pool.query(`UPDATE listings SET images = $2, updated_at = now() WHERE id = $1`, [listingId, images])
-
-  // Delete generated files (branded photos, spec sheets) that are no longer used.
-  const own = `/uploads/listings/${l.user_id}/`
-  const dropped = (l.images || []).filter((u: string) => !images.includes(u) && u.startsWith(own) && GENERATED.test(u))
-  if (dropped.length) await bucket.remove(dropped.map((u: string) => u.slice('/uploads/listings/'.length))).catch(() => {})
+  await pool.query(`UPDATE listings SET images = $2, image_sources = $3::jsonb, updated_at = now() WHERE id = $1`, [
+    listingId,
+    out.images,
+    JSON.stringify(out.sources),
+  ])
+  const images = out.images
 
   revalidatePath('/listings')
   revalidatePath(`/listings/${l.slug}`)

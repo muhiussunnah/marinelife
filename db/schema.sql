@@ -599,6 +599,8 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS meta_description text;
 -- A public offer the seller published elsewhere and that MarineYard lists on
 -- their behalf: buyers contact the seller directly (no MarineYard inbox).
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_public_offer boolean NOT NULL DEFAULT false;
+-- branded picture path -> { src, kind: photo|collage|tile|spec, w, h } (lib/listing-images-store.ts)
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS image_sources jsonb NOT NULL DEFAULT '{}'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS listings_slug_key ON listings (slug);
 CREATE INDEX IF NOT EXISTS idx_listings_public ON listings (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_listings_user ON listings (user_id, created_at DESC);

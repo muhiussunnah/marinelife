@@ -21,7 +21,7 @@ export const PRIORITY_SQL = `GREATEST(
 
 const PUBLIC_COLUMNS = `l.id, l.slug, l.title, l.category, l.brand, l.model, l.part_number, l.condition,
   l.price, l.currency, l.price_on_request, l.quantity, l.country, l.city, l.description, l.images,
-  l.status, l.views, l.created_at, l.published_at, l.contact_tier, l.is_public_offer, l.meta_title, l.meta_description,
+  l.status, l.views, l.created_at, l.published_at, l.contact_tier, l.is_public_offer, l.meta_title, l.meta_description, l.image_sources,
   ${PRIORITY_SQL} AS priority, p.full_name AS seller_name`
 
 export type ListingSort = 'featured' | 'newest' | 'price-asc' | 'price-desc'
